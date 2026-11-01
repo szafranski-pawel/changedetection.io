@@ -13,10 +13,480 @@ extruct (with subprocess isolation on Linux).
 """
 
 from html.parser import HTMLParser
+import html as html_module
+from urllib.parse import unquote, parse_qs, urlparse
 import json
 import re
 from loguru import logger
-from . import Restock
+from . import MISSING_STRINGS, Restock
+
+
+def _is_missing(value):
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in MISSING_STRINGS
+    return False
+
+
+def _as_price(value):
+    import math
+    if _is_missing(value) or isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        value = float(value)
+        return value if math.isfinite(value) else None
+    try:
+        price = Restock().parse_currency(str(value))
+    except Exception:
+        return None
+    return price if price is not None and math.isfinite(price) else None
+
+
+def _as_list(value):
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        return [value]
+    return []
+
+
+def _ci_get(obj, name):
+    """Case-insensitive dict lookup (JSON-LD keys are not always consistently cased)."""
+    if not isinstance(obj, dict):
+        return None
+    wanted = name.casefold()
+    for key, value in obj.items():
+        if isinstance(key, str) and key.casefold() == wanted:
+            return value
+    return None
+
+
+def _type_name(value):
+    return str(value).strip().casefold().rsplit('/', 1)[-1]
+
+
+def _jsonld_types(obj):
+    value = _ci_get(obj, '@type')
+    if isinstance(value, str):
+        return [_type_name(value)]
+    if isinstance(value, list):
+        return [_type_name(item) for item in value]
+    return []
+
+
+def _normalize_name(value):
+    if _is_missing(value):
+        return ''
+    value = html_module.unescape(str(value)).casefold()
+    value = re.sub(r'[^\w]+', ' ', value)
+    return re.sub(r'\s+', ' ', value).strip()
+
+
+def normalize_availability(value):
+    if _is_missing(value):
+        return None
+    value = str(value).strip().strip('"\'')
+    value = re.sub(r'(?i)^https?://schema\.org/', '', value)
+    value = re.sub(r'\s+', '', value)
+    return value.casefold() or None
+
+
+def _key_tokens(value):
+    if _is_missing(value):
+        return []
+    value = unquote(str(value)).casefold()
+    return [token for token in re.split(r'[-_.\s/:]+', value) if token]
+
+
+def _significant_tokens(value):
+    # Product identifiers in URLs virtually always contain a digit. This avoids
+    # matching generic words such as "product", "body" or "black".
+    return [token for token in _key_tokens(value)
+            if len(token) >= 3 and any(char.isdigit() for char in token)]
+
+
+def watch_url_product_keys(url):
+    """Return product-code-like tokens from the watch URL.
+
+    Covers `pid`/`sku` query parameters, demandware-style `dwvar_<PID>_...`
+    parameter names and codes embedded in the path slug. Full-token matching is
+    intentional: a SKU such as "3230" must not match "13230".
+    """
+    if not url:
+        return set()
+
+    parsed = urlparse(url)
+    tokens = set()
+
+    def add(value):
+        tokens.update(_significant_tokens(value))
+
+    for key, values in parse_qs(parsed.query).items():
+        key_lower = key.casefold()
+        key_parts = set(re.split(r'[^a-z0-9]+', key_lower))
+        if key_lower in ('pid', 'productid', 'product_id', 'sku'):
+            for value in values:
+                add(value)
+        elif key_lower.startswith('dwvar_'):
+            add(key[len('dwvar_'):].split('_')[0])
+            for value in values:
+                add(value)
+        elif key_parts & {'col', 'color', 'colour', 'size', 'sizes', 'taglia', 'taglie'}:
+            for value in values:
+                add(value)
+
+    path_slug = unquote(parsed.path.rsplit('/', 1)[-1])
+    path_slug = re.sub(r'\.(?:html?|php|aspx?)$', '', path_slug, flags=re.IGNORECASE)
+    add(path_slug)
+    for part in re.split(r'-', path_slug):
+        add(part)
+
+    return tokens
+
+
+def _product_keys(product):
+    keys = []
+    for name in ('sku', 'productID', 'productGroupID', 'mpn', 'gtin13', '@id', 'url'):
+        value = _ci_get(product, name)
+        if isinstance(value, str):
+            keys.append(value)
+
+    for variant in _as_list(_ci_get(product, 'hasVariant')):
+        if isinstance(variant, dict):
+            for name in ('sku', 'productID', 'mpn', 'gtin13'):
+                value = _ci_get(variant, name)
+                if isinstance(value, str):
+                    keys.append(value)
+    return keys
+
+
+def _string_values(value):
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        return [str(entry) for entry in value if isinstance(entry, (str, int, float))]
+    if isinstance(value, (int, float)):
+        return [str(value)]
+    return []
+
+
+def _match_keys_score(keys, url_tokens):
+    if not url_tokens:
+        return 0
+
+    best = 0
+    for key in keys:
+        tokens = _significant_tokens(key)
+        if not tokens or tokens[0] not in url_tokens:
+            continue
+        score = 1
+        if all(token in url_tokens for token in tokens):
+            score += 1
+        if len(tokens) == 1:
+            score += 1
+        best = max(best, score)
+    return best
+
+
+def _match_product_score(product, url_tokens):
+    return _match_keys_score(_product_keys(product), url_tokens)
+
+
+def _collect_product_candidates(jsonld_blocks):
+    """Return [(product, is_top_level), ...] from JSON-LD blocks."""
+    candidates = []
+    nested_keys = {
+        'hasvariant', 'issimilarto', 'isaccessoryorsparepartfor', 'isrelatedto',
+        'itemlistelement', 'offers'
+    }
+
+    def walk(value, nested=False):
+        if isinstance(value, list):
+            for item in value:
+                walk(item, nested)
+            return
+        if not isinstance(value, dict):
+            return
+
+        types = _jsonld_types(value)
+        if 'product' in types or 'productgroup' in types:
+            candidates.append((value, not nested))
+            for key, child in value.items():
+                if isinstance(key, str) and key.casefold() in nested_keys:
+                    walk(child, True)
+            return
+
+        for key, child in value.items():
+            if not isinstance(key, str) or not isinstance(child, (dict, list)):
+                continue
+            key_lower = key.casefold()
+            if key_lower == '@graph':
+                walk(child, nested)
+            elif key_lower in nested_keys:
+                # Recommendations are often wrapped in ItemList/offers/isSimilarTo.
+                # Products inside those containers are not the main product.
+                walk(child, True)
+            else:
+                walk(child, nested)
+
+    for block in jsonld_blocks:
+        walk(block, False)
+    return candidates
+
+
+def _flatten_offer(offer):
+    if not isinstance(offer, dict):
+        return
+    yield offer
+    for nested in _as_list(_ci_get(offer, 'offers')):
+        yield from _flatten_offer(nested)
+
+
+def _iter_offers(product):
+    for offer in _as_list(_ci_get(product, 'offers')):
+        yield from _flatten_offer(offer)
+
+    for variant in _as_list(_ci_get(product, 'hasVariant')):
+        if not isinstance(variant, dict):
+            continue
+        for offer in _as_list(_ci_get(variant, 'offers')):
+            yield from _flatten_offer(offer)
+
+
+def _unwrap_properties(value):
+    """Extruct microdata sub-items wrap their values in a `properties` dict."""
+    if isinstance(value, dict) and isinstance(value.get('properties'), dict):
+        return value['properties']
+    return value
+
+
+def _offer_price(offer):
+    price = _ci_get(offer, 'price')
+    if _is_missing(price):
+        for specification in _as_list(_ci_get(offer, 'priceSpecification')):
+            specification = _unwrap_properties(specification)
+            price = _ci_get(specification, 'price')
+            if not _is_missing(price):
+                break
+
+    if _is_missing(price) and 'aggregateoffer' in _jsonld_types(offer):
+        offer_count = _ci_get(offer, 'offerCount')
+        if offer_count in (None, 1, '1'):
+            price = _ci_get(offer, 'lowPrice')
+
+    return _as_price(price)
+
+
+def _offer_currency(offer):
+    value = _ci_get(offer, 'priceCurrency')
+    if _is_missing(value):
+        value = _ci_get(offer, 'currency')
+    if _is_missing(value):
+        for specification in _as_list(_ci_get(offer, 'priceSpecification')):
+            specification = _unwrap_properties(specification)
+            value = _ci_get(specification, 'priceCurrency')
+            if not _is_missing(value):
+                break
+    if _is_missing(value):
+        return None
+    return str(value).strip()
+
+
+def _offer_availability(offer):
+    return normalize_availability(_ci_get(offer, 'availability'))
+
+
+def _consensus(values):
+    unique = []
+    for value in values:
+        if value is not None and value not in unique:
+            unique.append(value)
+    return unique[0] if len(unique) == 1 else None
+
+
+def product_offer_data(product):
+    """Return price/currency/availability for one selected product only.
+
+    Variants/offers that disagree produce a partial result instead of silently
+    choosing the first one. This keeps the result atomic per product.
+    """
+    if not isinstance(product, dict):
+        return {}
+
+    prices = []
+    currencies = []
+    availabilities = []
+
+    for offer in _iter_offers(product):
+        price = _offer_price(offer)
+        if price is not None:
+            prices.append(price)
+        currency = _offer_currency(offer)
+        if currency:
+            currencies.append(currency)
+        availability = _offer_availability(offer)
+        if availability:
+            availabilities.append(availability)
+
+    if not prices:
+        price = _as_price(_ci_get(product, 'price'))
+        if price is not None:
+            prices.append(price)
+    if not currencies:
+        currency = _ci_get(product, 'priceCurrency')
+        if not _is_missing(currency):
+            currencies.append(str(currency).strip())
+    if not availabilities:
+        availability = normalize_availability(_ci_get(product, 'availability'))
+        if availability:
+            availabilities.append(availability)
+
+    result = {}
+    price = _consensus(prices)
+    if price is not None:
+        result['price'] = price
+    currency = _consensus([value.casefold() for value in currencies])
+    if currency is not None:
+        result['currency'] = currency.upper()
+    availability = _consensus(availabilities)
+    if availability is not None:
+        result['availability'] = availability
+    return result
+
+
+def select_main_product(jsonld_blocks, url=None, legacy=False):
+    """Select the Product/ProductGroup that belongs to the watched URL."""
+    candidates = _collect_product_candidates(jsonld_blocks or [])
+    if not candidates:
+        return None
+
+    url_tokens = watch_url_product_keys(url)
+    scored = []
+    for index, (product, top_level) in enumerate(candidates):
+        score = _match_product_score(product, url_tokens)
+        if score:
+            scored.append((score, top_level, -index, product))
+
+    if scored:
+        # A top-level product always beats a nested recommendation/variant.
+        # ProductGroup variants are aggregated by product_offer_data().
+        scored.sort(key=lambda entry: (entry[1], entry[0], entry[2]), reverse=True)
+        return scored[0][3]
+
+    top_level_products = [product for product, top_level in candidates if top_level]
+    if len(top_level_products) == 1:
+        return top_level_products[0]
+
+    if legacy and top_level_products:
+        return top_level_products[0]
+    return None
+
+
+def microdata_item_types(item):
+    value = item.get('type')
+    if isinstance(value, str):
+        return [_type_name(value)]
+    if isinstance(value, list):
+        return [_type_name(entry) for entry in value]
+    return []
+
+
+def select_microdata_product(items, url=None, jsonld_product=None, legacy=False):
+    """Select the microdata Product matching the already-selected JSON-LD product."""
+    candidates = [item for item in (items or [])
+                  if 'product' in microdata_item_types(item)
+                  or 'productgroup' in microdata_item_types(item)]
+    if not candidates:
+        return None
+
+    # URL/id/SKU matching is stronger than a name match: cross-sell tiles often
+    # reuse the same product name and must not fill a null main-product price.
+    url_tokens = watch_url_product_keys(url)
+    if url_tokens:
+        scored = []
+        for index, item in enumerate(candidates):
+            properties = item.get('properties') or {}
+            keys = []
+            for value in (item.get('id'), properties.get('sku'),
+                          properties.get('productID'), properties.get('url')):
+                keys.extend(_string_values(value))
+            score = _match_keys_score(keys, url_tokens)
+            if score:
+                scored.append((score, -index, item))
+        if scored:
+            scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
+            return scored[0][2]
+
+    if isinstance(jsonld_product, dict):
+        target_name = _normalize_name(_ci_get(jsonld_product, 'name'))
+        if target_name:
+            named = [item for item in candidates
+                     if any(_normalize_name(value) == target_name
+                            for value in _string_values((item.get('properties') or {}).get('name')))]
+            if named:
+                with_brand = [item for item in named
+                              if (item.get('properties') or {}).get('brand')
+                              or (item.get('properties') or {}).get('category')]
+                return (with_brand or named)[0]
+
+    if len(candidates) == 1:
+        return candidates[0]
+    if legacy:
+        return candidates[0]
+    return None
+
+
+def microdata_product_data(item):
+    """Extract price/currency/availability from one extruct microdata Product."""
+    if not isinstance(item, dict):
+        return {}
+    properties = item.get('properties') or {}
+
+    offers = []
+    for offer in _as_list(properties.get('offers')):
+        if not isinstance(offer, dict):
+            continue
+        if isinstance(offer.get('properties'), dict):
+            offers.append(offer['properties'])
+        else:
+            offers.append(offer)
+
+    pseudo_product = {
+        'offers': offers,
+        'price': properties.get('price'),
+        'priceCurrency': properties.get('priceCurrency'),
+        'availability': properties.get('availability'),
+    }
+    return product_offer_data(pseudo_product)
+
+
+def og_price(og_data):
+    """Current/sale OpenGraph price only. Never original/min-30d/pretax values."""
+    for key in ('product:sale_price:amount', 'og:sale_price:amount',
+                'product:price:amount', 'og:price:amount'):
+        if key in og_data:
+            price = _as_price(og_data[key])
+            if price is not None:
+                return price
+    return None
+
+
+def og_currency(og_data):
+    for key in ('product:sale_price:currency', 'og:sale_price:currency',
+                'product:price:currency', 'og:price:currency'):
+        if key in og_data and not _is_missing(og_data[key]):
+            return str(og_data[key]).strip()
+    return None
+
+
+def og_availability(og_data):
+    for key in ('product:availability', 'og:availability'):
+        if key in og_data:
+            availability = normalize_availability(og_data[key])
+            if availability:
+                return availability
+    return None
 
 
 class JSONLDExtractor(HTMLParser):
@@ -68,9 +538,10 @@ class JSONLDExtractor(HTMLParser):
 
 class OpenGraphExtractor(HTMLParser):
     """
-    Extract OpenGraph meta tags from HTML.
+    Extract OpenGraph/product meta tags from HTML.
 
-    Finds <meta property="og:*"> tags commonly used for social media sharing.
+    Finds <meta property="og:*"> and <meta property="product:*"> tags. Some
+    shops only use `product:price:amount`/`product:availability`, not `og:*`.
     """
 
     def __init__(self):
@@ -82,8 +553,7 @@ class OpenGraphExtractor(HTMLParser):
             attrs_dict = dict(attrs)
             prop = attrs_dict.get('property', '')
 
-            # Extract OpenGraph properties
-            if prop.startswith('og:'):
+            if prop.startswith('og:') or prop.startswith('product:'):
                 content = attrs_dict.get('content', '')
                 if content:
                     self.og_data[prop] = content
@@ -100,11 +570,24 @@ class MicrodataExtractor(HTMLParser):
 
     def __init__(self):
         super().__init__()
-        self.microdata = {}
+        self.microdata = {
+            'price': None,
+            'currency': None,
+            'availability': None,
+            'prices': [],
+            'currencies': [],
+            'availabilities': [],
+            'product_scopes': 0,
+        }
         self.current_itemprop = None
 
     def handle_starttag(self, tag, attrs):
         attrs_dict = dict(attrs)
+
+        if 'itemscope' in attrs_dict:
+            itemtype = (attrs_dict.get('itemtype') or '').casefold()
+            if 'product' in itemtype:
+                self.microdata['product_scopes'] += 1
 
         if 'itemprop' in attrs_dict:
             itemprop = attrs_dict['itemprop']
@@ -113,12 +596,14 @@ class MicrodataExtractor(HTMLParser):
             if itemprop == 'price':
                 if 'content' in attrs_dict:
                     self.microdata['price'] = attrs_dict['content']
+                    self.microdata['prices'].append(attrs_dict['content'])
                 else:
                     self.current_itemprop = 'price'
 
             elif itemprop == 'priceCurrency':
                 if 'content' in attrs_dict:
                     self.microdata['currency'] = attrs_dict['content']
+                    self.microdata['currencies'].append(attrs_dict['content'])
                 else:
                     self.current_itemprop = 'priceCurrency'
 
@@ -126,8 +611,10 @@ class MicrodataExtractor(HTMLParser):
                 # Can be in href (link) or content (meta)
                 if 'href' in attrs_dict:
                     self.microdata['availability'] = attrs_dict['href']
+                    self.microdata['availabilities'].append(attrs_dict['href'])
                 elif 'content' in attrs_dict:
                     self.microdata['availability'] = attrs_dict['content']
+                    self.microdata['availabilities'].append(attrs_dict['content'])
                 else:
                     self.current_itemprop = 'availability'
 
@@ -140,16 +627,19 @@ class MicrodataExtractor(HTMLParser):
                 price = Restock().parse_currency(data.strip())
                 if price is not None:
                     self.microdata['price'] = price
+                    self.microdata['prices'].append(data.strip())
             except ValueError:
                 pass
         elif self.current_itemprop == 'priceCurrency':
             currency = data.strip()
             if currency:
                 self.microdata['currency'] = currency
+                self.microdata['currencies'].append(currency)
         elif self.current_itemprop == 'availability':
             availability = data.strip()
             if availability:
                 self.microdata['availability'] = availability
+                self.microdata['availabilities'].append(availability)
 
     def handle_endtag(self, tag):
         # Reset current itemprop after closing tag
@@ -201,7 +691,7 @@ def extract_metadata_pure_python(html_content):
         microdata_extractor = MicrodataExtractor()
         microdata_extractor.feed(html_content)
         result['microdata'] = microdata_extractor.microdata
-        if result['microdata']:
+        if result['microdata'].get('prices') or result['microdata'].get('availabilities'):
             logger.trace(f"Pure Python: Found microdata: {result['microdata']}")
     except Exception as e:
         logger.debug(f"Microdata extraction failed: {e}")
@@ -209,18 +699,11 @@ def extract_metadata_pure_python(html_content):
     return result
 
 
-def query_price_availability(extracted_data):
-    """
-    Query extracted metadata for price and availability information.
+def _legacy_query_price_availability(extracted_data):
+    """Frozen whole-document behaviour for url=None/direct callers.
 
-    Uses jsonpath_ng to query JSON-LD data (same approach as extruct).
-    Falls back to OpenGraph and microdata if JSON-LD doesn't have the data.
-
-    Args:
-        extracted_data: Dict from extract_metadata_pure_python()
-
-    Returns:
-        dict: {'price': float, 'currency': str, 'availability': str}
+    New extraction/selection rules belong in the scoped path; this function is
+    intentionally kept small so existing integrations keep their old semantics.
     """
     from jsonpath_ng import parse
 
@@ -232,7 +715,7 @@ def query_price_availability(extracted_data):
             # Use jsonpath to find price/availability anywhere in the structure
             price_parse = parse('$..(price|Price)')
             availability_parse = parse('$..(availability|Availability)')
-            currency_parse = parse('$..(priceCurrency|currency|priceCurrency)')
+            currency_parse = parse('$..(priceCurrency|pricecurrency|currency)')
 
             price_results = [m.value for m in price_parse.find(data)]
             if price_results and not result.get('price'):
@@ -278,14 +761,86 @@ def query_price_availability(extracted_data):
 
     # 3. Use microdata as last resort
     microdata = extracted_data.get('microdata', {})
-    if not result.get('price') and 'price' in microdata:
+    if not result.get('price') and 'price' in microdata and microdata['price'] is not None:
         result['price'] = microdata['price']
-    if not result.get('currency') and 'currency' in microdata:
+    if not result.get('currency') and 'currency' in microdata and microdata['currency'] is not None:
         result['currency'] = microdata['currency']
-    if not result.get('availability') and 'availability' in microdata:
+    if not result.get('availability') and 'availability' in microdata and microdata['availability'] is not None:
         result['availability'] = microdata['availability']
 
-    # result['price'] could be float or str here, depending on the website, for example it might contain "1,00" commas, etc.
-    # using something like babel you need to know the locale of the website and even then it can be problematic
-    # we dont really do anything with the price data so far.. so just accept it the way it comes.
     return result
+
+
+def _query_price_availability_scoped(extracted_data, url):
+    """Product-scoped extraction: select one product, then use only its values."""
+    main_product = select_main_product(extracted_data.get('json-ld', []), url=url)
+    og_data = extracted_data.get('opengraph', {}) or {}
+
+    if main_product:
+        result = product_offer_data(main_product)
+        if result.get('currency') is None:
+            currency = og_currency(og_data)
+            if currency:
+                result['currency'] = currency
+        if result.get('availability') is None:
+            availability = og_availability(og_data)
+            if availability:
+                result['availability'] = availability
+        return result
+
+    # No Product/ProductGroup JSON-LD (Kazar-style page). Keep the legacy
+    # single-unique-price fallback, but refuse when the page contains more than
+    # one Product itemscope, so a carousel cannot masquerade as the main product.
+    microdata = extracted_data.get('microdata', {}) or {}
+    if microdata.get('product_scopes', 0) > 1:
+        return {}
+
+    prices = []
+    for raw_price in microdata.get('prices', []):
+        price = _as_price(raw_price)
+        if price is not None and price not in prices:
+            prices.append(price)
+    og_price_value = og_price(og_data)
+    if og_price_value is not None and og_price_value not in prices:
+        prices.append(og_price_value)
+
+    availabilities = []
+    for raw_availability in microdata.get('availabilities', []):
+        availability = normalize_availability(raw_availability)
+        if availability and availability not in availabilities:
+            availabilities.append(availability)
+    og_availability_value = og_availability(og_data)
+    if og_availability_value and og_availability_value not in availabilities:
+        availabilities.append(og_availability_value)
+
+    currencies = []
+    for raw_currency in microdata.get('currencies', []):
+        if not _is_missing(raw_currency) and raw_currency not in currencies:
+            currencies.append(str(raw_currency).strip())
+    og_currency_value = og_currency(og_data)
+    if og_currency_value and og_currency_value not in currencies:
+        currencies.append(og_currency_value)
+    if len(currencies) > 1:
+        currencies = []
+
+    result = {}
+    if len(prices) == 1:
+        result['price'] = prices[0]
+    if len(currencies) == 1:
+        result['currency'] = currencies[0]
+    if len(availabilities) == 1:
+        result['availability'] = availabilities[0]
+    return result
+
+
+def query_price_availability(extracted_data, url=None):
+    """
+    Query extracted metadata for price and availability information.
+
+    `url=None` keeps the original whole-document behaviour for direct callers.
+    When the restock processor passes the watch URL, extraction is scoped to the
+    Product/ProductGroup that belongs to that URL.
+    """
+    if url:
+        return _query_price_availability_scoped(extracted_data, url)
+    return _legacy_query_price_availability(extracted_data)

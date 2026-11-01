@@ -12,6 +12,7 @@ supports_text_filters_and_triggers = True
 supports_text_filters_and_triggers_elements = True
 supports_request_type = True
 _price_re = re.compile(r"Price:\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+MISSING_STRINGS = {'', 'null', 'none', 'n/a', 'na', 'not_available', 'notavailable', 'undefined'}
 
 
 class Restock(dict):
@@ -62,7 +63,10 @@ class Restock(dict):
         # Update with any provided positional arguments (dictionaries)
         if args:
             if len(args) == 1 and isinstance(args[0], dict):
-                self.update(args[0])
+                # dict.update() bypasses __setitem__, so a string price (eg "null" from an
+                # unavailable product, or "1.299,00") would stay a string and crash float() later.
+                for key, value in args[0].items():
+                    self[key] = value
             else:
                 raise ValueError("Only one positional argument of type 'dict' is allowed")
 
@@ -71,6 +75,10 @@ class Restock(dict):
         if key == 'price' or key == 'last_price':
             if isinstance(value, str):
                 value = self.parse_currency(raw_value=value)
+        elif key in ('currency', 'availability') and isinstance(value, str):
+            # Some sites (and our old extractor) emit the literal string "null".
+            if value.strip().lower() in MISSING_STRINGS:
+                value = None
 
         super().__setitem__(key, value)
 

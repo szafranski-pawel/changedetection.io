@@ -59,6 +59,180 @@ def _deduplicate_prices(data):
     return list(unique_data)
 
 
+def _extruct_og_flat(data):
+    """Turn extruct's [{'properties': [[key, value], ...]}] into a flat dict."""
+    flat = {}
+    for block in data.get('opengraph') or []:
+        if not isinstance(block, dict):
+            continue
+        properties = block.get('properties') or []
+        items = properties.items() if isinstance(properties, dict) else properties
+        for pair in items:
+            if isinstance(pair, (list, tuple)) and len(pair) >= 2:
+                key, value = pair[0], pair[1]
+                if key not in flat:
+                    flat[key] = value
+    return flat
+
+
+def _scoped_get_itemprop_availability_with_provenance(data, url):
+    """Pick one product and read price/currency/availability only from it.
+
+    Returns (Restock, had_main_product). The provenance flag prevents merging a
+    page-unique fallback price with a selected-main availability from the other
+    extraction engine.
+    """
+    from .pure_python_extractor import (
+        microdata_item_types,
+        microdata_product_data,
+        og_availability,
+        og_currency,
+        og_price,
+        product_offer_data,
+        select_main_product,
+        select_microdata_product,
+    )
+
+    og_data = _extruct_og_flat(data)
+    main_product = select_main_product(data.get('json-ld', []), url=url)
+
+    if main_product:
+        result = product_offer_data(main_product)
+        if result.get('currency') is None:
+            currency = og_currency(og_data)
+            if currency:
+                result['currency'] = currency
+        if result.get('availability') is None:
+            availability = og_availability(og_data)
+            if availability:
+                result['availability'] = availability
+
+        microdata_item = select_microdata_product(
+            data.get('microdata', []), url=url, jsonld_product=main_product)
+        if microdata_item:
+            microdata_values = microdata_product_data(microdata_item)
+            for field in ('price', 'currency', 'availability'):
+                if result.get(field) is None and microdata_values.get(field) is not None:
+                    result[field] = microdata_values[field]
+
+        return Restock(result), True
+
+    # No Product/ProductGroup JSON-LD. If the page has several Product
+    # itemscopes, it is a multi-product page and we must not guess.
+    product_items = [item for item in (data.get('microdata') or [])
+                     if 'product' in microdata_item_types(item)
+                     or 'productgroup' in microdata_item_types(item)]
+    if len(product_items) > 1:
+        raise MoreThanOnePriceFound()
+
+    if len(product_items) == 1:
+        result = microdata_product_data(product_items[0])
+    else:
+        # No Product scope at all. Accept only a single unique price from
+        # offer-like microdata or the page-level OpenGraph tags.
+        prices = []
+        availabilities = []
+        currencies = []
+        for item in data.get('microdata') or []:
+            values = microdata_product_data(item)
+            if values.get('price') is not None and values['price'] not in prices:
+                prices.append(values['price'])
+            if values.get('availability') and values['availability'] not in availabilities:
+                availabilities.append(values['availability'])
+            if values.get('currency') and values['currency'] not in currencies:
+                currencies.append(values['currency'])
+
+        og_price_value = og_price(og_data)
+        if not prices and og_price_value is not None:
+            prices.append(og_price_value)
+        og_availability_value = og_availability(og_data)
+        if og_availability_value and og_availability_value not in availabilities:
+            availabilities.append(og_availability_value)
+        og_currency_value = og_currency(og_data)
+        if og_currency_value and og_currency_value not in currencies:
+            currencies.append(og_currency_value)
+
+        if len(prices) > 1:
+            raise MoreThanOnePriceFound()
+        result = {}
+        if len(prices) == 1:
+            result['price'] = prices[0]
+        if len(currencies) == 1:
+            result['currency'] = currencies[0]
+        if len(availabilities) == 1:
+            result['availability'] = availabilities[0]
+
+    if result.get('price') is None:
+        price = og_price(og_data)
+        if price is not None:
+            result['price'] = price
+    if result.get('currency') is None:
+        currency = og_currency(og_data)
+        if currency:
+            result['currency'] = currency
+    if result.get('availability') is None:
+        availability = og_availability(og_data)
+        if availability:
+            result['availability'] = availability
+
+    return Restock(result), False
+
+
+def _scoped_get_itemprop_availability(data, url):
+    value, _had_main = _scoped_get_itemprop_availability_with_provenance(data, url)
+    return value
+
+
+def _safe_float(value):
+    import math
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return result if math.isfinite(result) else None
+
+
+def _combine_with_pure_partial(pure_data, fetched, scoped,
+                               pure_had_main=False, fetched_had_main=False):
+    """Keep a valid pure-Python partial if extruct fails or finds nothing.
+
+    In the scoped path the two engines can disagree on whether a main product
+    exists. Never merge a fallback (page-unique) price with a selected-main
+    availability; prefer the selected-main side wholesale and fill only
+    currency/availability gaps from the other side.
+    """
+    if not pure_data:
+        return fetched
+
+    if scoped and fetched_had_main and not pure_had_main:
+        merged = dict(fetched)
+        for field in ('currency', 'availability'):
+            if merged.get(field) is None and pure_data.get(field) is not None:
+                merged[field] = pure_data[field]
+        return Restock(merged)
+
+    if scoped and pure_had_main and not fetched_had_main:
+        merged = dict(pure_data)
+        for field in ('currency', 'availability'):
+            if merged.get(field) is None and fetched.get(field) is not None:
+                merged[field] = fetched[field]
+        return Restock(merged)
+
+    fetched_has_data = (fetched.get('price') is not None
+                        or fetched.get('availability') is not None)
+    if not fetched_has_data:
+        return Restock(pure_data)
+
+    if scoped:
+        merged = dict(pure_data)
+        for field in ('price', 'currency', 'availability'):
+            if merged.get(field) is None and fetched.get(field) is not None:
+                merged[field] = fetched[field]
+        return Restock(merged)
+
+    return fetched
+
+
 # =============================================================================
 # MEMORY MANAGEMENT: Why We Use Multiprocessing (Linux Only)
 # =============================================================================
@@ -130,7 +304,7 @@ def _deduplicate_prices(data):
 # =============================================================================
 
 
-def _extract_itemprop_availability_worker(pipe_conn):
+def _extract_itemprop_availability_worker(pipe_conn, url=None):
     """
     Subprocess worker for itemprop extraction (Linux memory management).
 
@@ -140,6 +314,7 @@ def _extract_itemprop_availability_worker(pipe_conn):
 
     Args:
         pipe_conn: Pipe connection to receive HTML and send result
+        url: Watch URL used to select the product in the page
     """
     import json
     import gc
@@ -157,12 +332,13 @@ def _extract_itemprop_availability_worker(pipe_conn):
         gc.collect()
 
         # Perform extraction in subprocess (uses extruct/lxml)
-        result_data = get_itemprop_availability(html_content)
+        result_data, had_main = get_itemprop_availability_with_provenance(html_content, url=url)
 
         # Convert Restock object to dict for JSON serialization
         result = {
             'success': True,
-            'data': dict(result_data) if result_data else {}
+            'data': dict(result_data) if result_data else {},
+            'had_main': had_main,
         }
         pipe_conn.send_bytes(json.dumps(result).encode('utf-8'))
 
@@ -202,7 +378,7 @@ def _extract_itemprop_availability_worker(pipe_conn):
         pipe_conn.close()
 
 
-def extract_itemprop_availability_safe(html_content) -> Restock:
+def extract_itemprop_availability_safe(html_content, url=None) -> Restock:
     """
     Extract itemprop availability with hybrid approach for memory efficiency.
 
@@ -212,6 +388,7 @@ def extract_itemprop_availability_safe(html_content) -> Restock:
 
     Args:
         html_content: HTML string to parse
+        url: Watch URL used to select the product in the page (None keeps legacy behaviour)
 
     Returns:
         Restock: Extracted availability data
@@ -222,22 +399,27 @@ def extract_itemprop_availability_safe(html_content) -> Restock:
     """
     import platform
 
+    pure_price_data = {}
+    pure_had_main = False
+
     # Step 1: Try pure Python extraction first (fast, no lxml, no memory leak)
     try:
-        from .pure_python_extractor import extract_metadata_pure_python, query_price_availability
+        from .pure_python_extractor import extract_metadata_pure_python, query_price_availability, select_main_product
 
         logger.trace("Attempting pure Python metadata extraction (no lxml)")
         extracted_data = extract_metadata_pure_python(html_content)
-        price_data = query_price_availability(extracted_data)
+        price_data = query_price_availability(extracted_data, url=url)
+        pure_price_data = price_data or {}
+        pure_had_main = bool(url) and select_main_product(extracted_data.get('json-ld', []), url=url) is not None
 
-        # If we got price AND availability, we're done!
-        if price_data.get('price') and price_data.get('availability'):
+        # If we got price AND availability, we're done! price=0 is valid.
+        if price_data.get('price') is not None and price_data.get('availability') is not None:
             result = Restock(price_data)
             logger.debug(f"Pure Python extraction successful: {dict(result)}")
             return result
 
         # If we got some data but not everything, still try extruct for completeness
-        if price_data.get('price') or price_data.get('availability'):
+        if price_data.get('price') is not None or price_data.get('availability') is not None:
             logger.debug(f"Pure Python extraction partial: {price_data}, will try extruct for completeness")
 
     except Exception as e:
@@ -256,7 +438,7 @@ def extract_itemprop_availability_safe(html_content) -> Restock:
         try:
             ctx = multiprocessing.get_context('spawn')
             parent_conn, child_conn = ctx.Pipe()
-            p = ctx.Process(target=_extract_itemprop_availability_worker, args=(child_conn,))
+            p = ctx.Process(target=_extract_itemprop_availability_worker, args=(child_conn, url))
             p.start()
 
             # Send HTML as raw bytes (no pickle)
@@ -285,7 +467,10 @@ def extract_itemprop_availability_safe(html_content) -> Restock:
             # Handle result or re-raise exception
             if result['success']:
                 # Reconstruct Restock object from dict
-                restock_obj = Restock(result['data'])
+                fetched_had_main = result.get('had_main', False)
+                restock_obj = _combine_with_pure_partial(
+                    pure_price_data, Restock(result['data']), scoped=bool(url),
+                    pure_had_main=pure_had_main, fetched_had_main=fetched_had_main)
                 # Clean up result dict
                 del result
                 gc.collect()
@@ -306,18 +491,39 @@ def extract_itemprop_availability_safe(html_content) -> Restock:
             # If multiprocessing itself fails, log and fall back to direct call
             logger.warning(f"Subprocess extraction failed: {e}, falling back to direct call")
             gc.collect()
-            return get_itemprop_availability(html_content)
+            try:
+                fetched, fetched_had_main = get_itemprop_availability_with_provenance(html_content, url=url)
+            except MoreThanOnePriceFound:
+                raise
+            except Exception:
+                if pure_price_data:
+                    return Restock(pure_price_data)
+                raise
+            return _combine_with_pure_partial(
+                pure_price_data, fetched, scoped=bool(url),
+                pure_had_main=pure_had_main, fetched_had_main=fetched_had_main)
     else:
         # Non-Linux: direct call (no subprocess overhead needed)
-        return get_itemprop_availability(html_content)
+        try:
+            fetched, fetched_had_main = get_itemprop_availability_with_provenance(html_content, url=url)
+        except MoreThanOnePriceFound:
+            raise
+        except Exception:
+            if pure_price_data:
+                return Restock(pure_price_data)
+            raise
+        return _combine_with_pure_partial(
+            pure_price_data, fetched, scoped=bool(url),
+            pure_had_main=pure_had_main, fetched_had_main=fetched_had_main)
 
 
 # should return Restock()
 # add casting?
-def get_itemprop_availability(html_content) -> Restock:
-    """
-    Kind of funny/cool way to find price/availability in one many different possibilities.
-    Use 'extruct' to find any possible RDFa/microdata/json-ld data, make a JSON string from the output then search it.
+def get_itemprop_availability_with_provenance(html_content, url=None):
+    """Return (Restock, had_main_product) for the extruct path.
+
+    The provenance flag is used by the safe wrapper so a page-unique fallback
+    price is never merged with a selected-main availability from pure Python.
     """
     from jsonpath_ng import parse
 
@@ -334,16 +540,21 @@ def get_itemprop_availability(html_content) -> Restock:
         data = extruct.extract(html_content, syntaxes=syntaxes)
     except Exception as e:
         logger.warning(f"Unable to extract data, document parsing with extruct failed with {type(e).__name__} - {str(e)}")
-        return Restock()
+        return Restock(), False
 
     logger.trace(f"Extruct basic extract of all metadata done in {time.time() - now:.3f}s")
+
+    if url:
+        value, had_main = _scoped_get_itemprop_availability_with_provenance(data, url)
+        logger.trace(f"Processed with Extruct (scoped) in {time.time()-now:.3f}s")
+        return value, had_main
 
     # First phase, dead simple scanning of anything that looks useful
     value = Restock()
     if data:
         logger.debug("Using jsonpath to find price/availability/etc")
         price_parse = parse('$..(price|Price)')
-        pricecurrency_parse = parse('$..(pricecurrency|currency|priceCurrency )')
+        pricecurrency_parse = parse('$..(priceCurrency|pricecurrency|currency)')
         availability_parse = parse('$..(availability|Availability)')
 
         price_result = _deduplicate_prices(price_parse.find(data))
@@ -388,6 +599,11 @@ def get_itemprop_availability(html_content) -> Restock:
             value['availability'] = re.sub(r'\s+', '', value['availability'])
     logger.trace(f"Processed with Extruct in {time.time()-now:.3f}s")
 
+    return value, False
+
+
+def get_itemprop_availability(html_content, url=None) -> Restock:
+    value, _had_main = get_itemprop_availability_with_provenance(html_content, url=url)
     return value
 
 
@@ -486,7 +702,7 @@ class perform_site_check(difference_detection_processor):
         # Try built-in extraction first, this will scan metadata in the HTML
         # On Linux, this runs in a subprocess to prevent lxml/extruct memory leaks
         try:
-            itemprop_availability = extract_itemprop_availability_safe(self.fetcher.content)
+            itemprop_availability = extract_itemprop_availability_safe(self.fetcher.content, url=watch.link)
         except MoreThanOnePriceFound as e:
             # Don't raise immediately - let plugins try to handle this case
             # Plugins might be able to determine which price is correct
@@ -540,7 +756,7 @@ class perform_site_check(difference_detection_processor):
                     logger.debug("No item price/availability from plugins")
 
         # If we had multiple prices and plugins also failed, NOW raise the exception
-        if multiple_prices_found and not itemprop_availability.get('price'):
+        if multiple_prices_found and itemprop_availability.get('price') is None:
             raise ProcessorException(
                 message="Cannot run, more than one price detected, this plugin is only for product pages with ONE product, try the content-change detection mode.",
                 url=watch.get('url'),
@@ -550,7 +766,7 @@ class perform_site_check(difference_detection_processor):
             )
 
         # Something valid in get_itemprop_availability() by scraping metadata ?
-        if itemprop_availability.get('price') or itemprop_availability.get('availability'):
+        if itemprop_availability.get('price') is not None or itemprop_availability.get('availability'):
             # Store for other usage. Wrap in Restock() so it's ALWAYS a Restock, never a plain
             # dict: the built-in extruct path returns a Restock, but plugin fallbacks (e.g. the
             # LLM restock scraper) return a plain dict. A plain dict here later blows up callers
@@ -588,7 +804,7 @@ class perform_site_check(difference_detection_processor):
         else:
             update_obj['restock']['last_price'] = old_restock.get('last_price')  # unchanged: keep the existing reference
 
-        if not self.fetcher.instock_data and not itemprop_availability.get('availability') and not itemprop_availability.get('price'):
+        if not self.fetcher.instock_data and not itemprop_availability.get('availability') and itemprop_availability.get('price') is None:
             # Availability/restock checking may be turned off ('in_stock_processing' == 'off'),
             # but there's still nothing here to track at all - that's always worth raising on.
             # Just don't blame "restock"/stock data for it when the user turned stock checking
@@ -622,7 +838,8 @@ class perform_site_check(difference_detection_processor):
                 update_obj['restock']["in_stock"] = False
 
         # What we store in the snapshot
-        price = update_obj.get('restock').get('price') if update_obj.get('restock').get('price') else ""
+        price = update_obj.get('restock').get('price')
+        price = price if price is not None else ""
         snapshot_content = f"In Stock: {update_obj.get('restock').get('in_stock')} - Price: {price}"
 
         # Main detection method
@@ -642,13 +859,16 @@ class perform_site_check(difference_detection_processor):
                 # All cases
                 changed_detected = True
 
-        if restock_settings.get('follow_price_changes') and watch.get('restock') and update_obj.get('restock') and update_obj['restock'].get('price'):
-            price = float(update_obj['restock'].get('price'))
+        old_restock = watch.get('restock') or {}
+        new_price = _safe_float(update_obj.get('restock', {}).get('price'))
+        old_price_value = _safe_float(old_restock.get('price'))
+        if restock_settings.get('follow_price_changes') and watch.get('restock') and update_obj.get('restock') and new_price is not None:
+            price = new_price
             # Compare against the previous check's price (the value 'price' held before this check).
             # That old stored 'price' is the correct reference point - last_price now mirrors it for
             # display, but reading 'price' directly avoids any off-by-one from last_price's own update.
-            if watch['restock'].get('price'):
-                previous_price = float(watch['restock'].get('price'))
+            if old_price_value is not None:
+                previous_price = old_price_value
                 logger.debug(
                     f"{watch.get('uuid')} Comparing NEW price '{price}' against previous check's price '{previous_price}' -> "
                     f"price {'CHANGED' if price != previous_price else 'unchanged'}")
@@ -657,36 +877,34 @@ class perform_site_check(difference_detection_processor):
                     changed_detected = True
 
             # Minimum/maximum price limit
-            if update_obj.get('restock') and update_obj['restock'].get('price'):
+            if update_obj.get('restock') and new_price is not None:
                 logger.debug(
                     f"{watch.get('uuid')} - Change was detected, 'price_change_max' is '{restock_settings.get('price_change_max', '')}' 'price_change_min' is '{restock_settings.get('price_change_min', '')}', price from website is '{update_obj['restock'].get('price', '')}'.")
-                if update_obj['restock'].get('price'):
-                    min_limit = float(restock_settings.get('price_change_min')) if restock_settings.get('price_change_min') else None
-                    max_limit = float(restock_settings.get('price_change_max')) if restock_settings.get('price_change_max') else None
+                min_limit = float(restock_settings.get('price_change_min')) if restock_settings.get('price_change_min') else None
+                max_limit = float(restock_settings.get('price_change_max')) if restock_settings.get('price_change_max') else None
 
-                    price = float(update_obj['restock'].get('price'))
-                    logger.debug(f"{watch.get('uuid')} after float conversion - Min limit: '{min_limit}' Max limit: '{max_limit}' Price: '{price}'")
-                    if min_limit or max_limit:
-                        if is_between(number=price, lower=min_limit, upper=max_limit):
-                            # Price was between min/max limit, so there was nothing todo in any case
-                            logger.trace(f"{watch.get('uuid')} {price} is between {min_limit} and {max_limit}, nothing to check, forcing changed_detected = False (was {changed_detected})")
-                            changed_detected = False
-                        else:
-                            logger.trace(f"{watch.get('uuid')} {price} is between {min_limit} and {max_limit}, continuing normal comparison")
+                logger.debug(f"{watch.get('uuid')} after float conversion - Min limit: '{min_limit}' Max limit: '{max_limit}' Price: '{price}'")
+                if min_limit or max_limit:
+                    if is_between(number=price, lower=min_limit, upper=max_limit):
+                        # Price was between min/max limit, so there was nothing todo in any case
+                        logger.trace(f"{watch.get('uuid')} {price} is between {min_limit} and {max_limit}, nothing to check, forcing changed_detected = False (was {changed_detected})")
+                        changed_detected = False
+                    else:
+                        logger.trace(f"{watch.get('uuid')} {price} is between {min_limit} and {max_limit}, continuing normal comparison")
 
-                    # Price comparison by % - against the previous check's price
-                    if watch['restock'].get('price') and changed_detected and restock_settings.get('price_change_threshold_percent'):
-                        previous_price = float(watch['restock'].get('price'))
-                        pc = float(restock_settings.get('price_change_threshold_percent'))
-                        change = abs((price - previous_price) / previous_price * 100)
-                        logger.debug(
-                            f"{watch.get('uuid')} % threshold check - comparing NEW price '{price}' against previous "
-                            f"check's price '{previous_price}' = {change:.3f}% change (threshold {pc}%)")
-                        if change and change <= pc:
-                            logger.debug(f"{watch.get('uuid')} Override change-detected to FALSE because % threshold ({pc}%) was {change:.3f}%")
-                            changed_detected = False
-                        else:
-                            logger.debug(f"{watch.get('uuid')} Price change was {change:.3f}% , (threshold {pc}%)")
+                # Price comparison by % - against the previous check's price
+                if old_price_value not in (None, 0) and changed_detected and restock_settings.get('price_change_threshold_percent'):
+                    previous_price = old_price_value
+                    pc = float(restock_settings.get('price_change_threshold_percent'))
+                    change = abs((price - previous_price) / previous_price * 100)
+                    logger.debug(
+                        f"{watch.get('uuid')} % threshold check - comparing NEW price '{price}' against previous "
+                        f"check's price '{previous_price}' = {change:.3f}% change (threshold {pc}%)")
+                    if change and change <= pc:
+                        logger.debug(f"{watch.get('uuid')} Override change-detected to FALSE because % threshold ({pc}%) was {change:.3f}%")
+                        changed_detected = False
+                    else:
+                        logger.debug(f"{watch.get('uuid')} Price change was {change:.3f}% , (threshold {pc}%)")
 
         # Always record the new checksum
         update_obj["previous_md5"] = fetched_md5

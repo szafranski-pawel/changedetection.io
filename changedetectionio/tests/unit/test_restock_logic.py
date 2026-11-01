@@ -64,5 +64,31 @@ class TestDiffBuilder(unittest.TestCase):
             assert query_price_availability(extract_metadata_pure_python(ld_json)).get('price') == expected, f"pure python JSON-LD {raw!r}"
             assert query_price_availability(extract_metadata_pure_python(microdata_text)).get('price') == expected, f"pure python microdata text {raw!r}"
 
+    def test_null_price_from_unavailable_product_is_none(self):
+        """Intimissimi emits the literal string "null" for price on an unavailable product.
+        Restock must store it as None, otherwise the processor's float(price) raises."""
+        from changedetectionio.processors.restock_diff import Restock
+
+        assert Restock({'price': 'null'}).get('price') is None
+        assert Restock({'price': '189,90'}).get('price') == 189.9
+
+        html_content = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Unavailable Product",
+         "offers": {"@type": "Offer", "price": "null", "priceCurrency": ""}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Product">
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="priceCurrency" content="null" />
+            <meta itemprop="price" content="null" />
+            <meta itemprop="availability" content="OutOfStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        value = restock_diff.extract_itemprop_availability_safe(html_content)
+        assert value.get('price') is None
+        assert value.get('availability') == 'OutOfStock'
+
 if __name__ == '__main__':
     unittest.main()
