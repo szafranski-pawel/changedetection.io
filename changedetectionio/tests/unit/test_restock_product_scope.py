@@ -232,6 +232,34 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIn('bo1294c', keys)
         self.assertNotIn('9887', keys)
 
+        keys = watch_url_product_keys(
+            'https://yourkaya.pl/products/more-collagen?variant=58522834239823')
+        self.assertIn('58522834239823', keys)
+
+        keys = watch_url_product_keys(
+            'https://shop.example/product/main-MAIN123.html?variant=58522834239823')
+        self.assertIn('main123', keys)
+        self.assertNotIn('58522834239823', keys)
+
+    def test_variant_id_selects_product_when_path_has_no_code(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Other",
+         "productID": "999999", "offers": {"@type": "Offer", "price": "99",
+         "priceCurrency": "PLN", "availability": "http://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "productID": "58522834239823", "offers": {"@type": "Offer", "price": "10",
+         "priceCurrency": "PLN", "availability": "http://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://yourkaya.pl/products/more-collagen?variant=58522834239823'
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
+
     def test_color_value_does_not_select_another_product(self):
         html = """<html><body>
         <script type="application/ld+json">
@@ -526,6 +554,39 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(og_currency({'og:price:currency': 'USD'}), 'USD')
         self.assertIsNone(og_currency({'product:price:currency': 'null'}))
 
+    def test_no_product_currency_conflict_is_not_overridden_by_opengraph(self):
+        html = """<html><head>
+        <meta property="product:availability" content="in stock" />
+        <meta property="product:price:currency" content="PLN" />
+        </head><body>
+        <div itemscope itemtype="http://schema.org/Offer">
+          <meta itemprop="priceCurrency" content="EUR" />
+        </div>
+        <div itemscope itemtype="http://schema.org/Offer">
+          <meta itemprop="priceCurrency" content="USD" />
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertIsNone(extract(html, url).get('currency'))
+        self.assertIsNone(pure(html, url).get('currency'))
+        self.assertIsNone(extruct(html, url).get('currency'))
+
+    def test_currency_comparison_is_case_insensitive(self):
+        html = """<html><head>
+        <meta property="product:price:currency" content="pln" />
+        </head><body>
+        <div itemscope itemtype="http://schema.org/Offer">
+          <meta itemprop="price" content="10" />
+          <meta itemprop="priceCurrency" content="PLN" />
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertEqual(extract(html, url).get('currency'), 'PLN')
+        self.assertEqual(pure(html, url).get('currency'), 'PLN')
+        self.assertEqual(extruct(html, url).get('currency'), 'PLN')
+
     def test_extruct_og_flat_handles_dict_and_list_properties(self):
         from changedetectionio.processors.restock_diff.processor import _extruct_og_flat
 
@@ -585,6 +646,86 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(value.get('availability'), 'outofstock')
         self.assertEqual(pure(html, url).get('availability'), 'outofstock')
         self.assertEqual(extruct(html, url).get('availability'), 'outofstock')
+
+    def test_ambiguous_microdata_does_not_get_opengraph_stock(self):
+        html = """<html><head>
+        <meta property="product:availability" content="in stock" />
+        </head><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same Name",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Product">
+          <span itemprop="name">Same Name</span>
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="99" />
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        <div itemscope itemtype="http://schema.org/Product">
+          <span itemprop="name">Same Name</span>
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="88" />
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/collection/same-name.html'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertIsNone(value.get('availability'))
+        self.assertIsNone(pure(html, url).get('availability'))
+        self.assertIsNone(extruct(html, url).get('availability'))
+
+    def test_product_id_microdata_confirms_product(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main Product",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Product">
+          <span itemprop="name">Main Product</span>
+          <meta itemprop="productID" content="MAIN123" />
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="10" />
+            <link itemprop="availability" href="http://schema.org/OutOfStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertEqual(pure(html, url).get('availability'), 'outofstock')
+        self.assertEqual(extruct(html, url).get('availability'), 'outofstock')
+
+    def test_explicit_null_in_price_specification_or_variant_blocks_microdata_price(self):
+        microdata = """
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/product/main-MAIN123.html">
+          <span itemprop="name">Main Product</span>
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="10" />
+          </div>
+        </div>"""
+        specification = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main Product",
+         "sku": "MAIN123", "offers": {"@type": "Offer",
+          "priceSpecification": {"@type": "PriceSpecification", "price": "null"}}}
+        </script>""" + microdata + "</body></html>"
+        variant = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Main Product",
+         "productGroupID": "MAIN123",
+         "hasVariant": [{"@type": "Product", "sku": "MAIN123-1", "price": "null"}]}
+        </script>""" + microdata + "</body></html>"
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertIsNone(extract(specification, url).get('price'))
+        self.assertIsNone(extract(variant, url).get('price'))
 
     def test_microdata_price_fills_missing_jsonld_price_but_not_explicit_null(self):
         html = """<html><body>

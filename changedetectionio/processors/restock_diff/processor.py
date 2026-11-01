@@ -95,6 +95,9 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     )
 
     og_data = _extruct_og_flat(data)
+    product_items = [item for item in (data.get('microdata') or [])
+                     if 'product' in microdata_item_types(item)
+                     or 'productgroup' in microdata_item_types(item)]
     main_product = select_main_product(data.get('json-ld', []), url=url)
 
     if main_product:
@@ -103,7 +106,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         # Microdata is product-specific, so it wins over page-level OpenGraph.
         # Never take a microdata price when the JSON-LD explicitly says null.
         microdata_item = select_microdata_product(
-            data.get('microdata', []), url=url, jsonld_product=main_product)
+            product_items, url=url, jsonld_product=main_product)
         if microdata_item:
             microdata_values = microdata_product_data(microdata_item)
             for field in ('currency', 'availability'):
@@ -114,23 +117,23 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                     and microdata_values.get('price') is not None):
                 result['price'] = microdata_values['price']
 
-        if result.get('currency') is None:
-            currency = og_currency(og_data)
-            if currency:
-                result['currency'] = currency
-        if result.get('availability') is None:
-            availability = og_availability(og_data)
-            if availability:
-                result['availability'] = availability
+        # OpenGraph is page-level. If microdata has products but none was
+        # matched, it is ambiguous and OG must not guess for it.
+        if not product_items or microdata_item:
+            if result.get('currency') is None:
+                currency = og_currency(og_data)
+                if currency:
+                    result['currency'] = currency
+            if result.get('availability') is None:
+                availability = og_availability(og_data)
+                if availability:
+                    result['availability'] = availability
 
         return Restock(result), True
 
     # No Product/ProductGroup JSON-LD. Match an itemscope to the watched URL
     # before falling back to a single product; several unmatched products are
     # still ambiguous.
-    product_items = [item for item in (data.get('microdata') or [])
-                     if 'product' in microdata_item_types(item)
-                     or 'productgroup' in microdata_item_types(item)]
     microdata_item = select_microdata_product(product_items, url=url)
     if microdata_item:
         result = microdata_product_data(microdata_item)
@@ -151,7 +154,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             if values.get('availability') and values['availability'] not in availabilities:
                 availabilities.append(values['availability'])
             if values.get('currency') and values['currency'] not in currencies:
-                currencies.append(values['currency'])
+                currencies.append(str(values['currency']).strip().upper())
 
         og_price_value = og_price(og_data)
         if not prices and og_price_value is not None:
@@ -172,6 +175,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             result['currency'] = currencies[0]
         if len(availabilities) == 1:
             result['availability'] = availabilities[0]
+        return Restock(result), False
 
     if result.get('price') is None:
         price = og_price(og_data)
@@ -495,6 +499,8 @@ def extract_itemprop_availability_safe(html_content, url=None) -> Restock:
                 else:
                     raise Exception(f"{exception_type}: {exception_msg}")
 
+        except MoreThanOnePriceFound:
+            raise
         except Exception as e:
             # If multiprocessing itself fails, log and fall back to direct call
             logger.warning(f"Subprocess extraction failed: {e}, falling back to direct call")
@@ -569,7 +575,7 @@ def get_itemprop_availability_with_provenance(html_content, url=None):
         if price_result:
             # Right now, we just support single product items, maybe we will store the whole actual metadata seperately in teh future and
             # parse that for the UI?
-            if len(price_result) > 1 and len(price_result) > 1:
+            if len(price_result) > 1:
                 # See of all prices are different, in the case that one product has many embedded data types with the same price
                 # One might have $121.95 and another 121.95 etc
                 logger.warning(f"More than one price found {price_result}, throwing exception, cant use this plugin.")

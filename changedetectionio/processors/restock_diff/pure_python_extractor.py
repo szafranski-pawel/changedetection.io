@@ -119,14 +119,17 @@ def watch_url_product_keys(url):
     """Return product-code-like tokens from the watch URL.
 
     Covers `pid`/`sku` query parameters, demandware-style `dwvar_<PID>_...`
-    parameter names and codes embedded in the path slug. Full-token matching is
-    intentional: a SKU such as "3230" must not match "13230".
+    parameter names, Shopify-style `variant` params, and codes embedded in the
+    path slug. Full-token matching is intentional: a SKU such as "3230" must not
+    match "13230". Variant ids are only a fallback when the URL has no stronger
+    product code, because they can collide with unrelated SKUs.
     """
     if not url:
         return set()
 
     parsed = urlparse(url)
     tokens = set()
+    fallback_tokens = set()
 
     def add(value):
         tokens.update(_significant_tokens(value))
@@ -138,6 +141,9 @@ def watch_url_product_keys(url):
                 add(value)
         elif key_lower.startswith('dwvar_'):
             add(key[len('dwvar_'):].split('_')[0])
+        elif key_lower in ('variant', 'variantid', 'variant_id', 'id'):
+            for value in values:
+                fallback_tokens.update(_significant_tokens(value))
 
     path_slug = unquote(parsed.path.rsplit('/', 1)[-1])
     path_slug = re.sub(r'\.(?:html?|php|aspx?)$', '', path_slug, flags=re.IGNORECASE)
@@ -145,6 +151,8 @@ def watch_url_product_keys(url):
     for part in re.split(r'-', path_slug):
         add(part)
 
+    if not tokens:
+        tokens.update(fallback_tokens)
     return tokens
 
 
@@ -460,6 +468,16 @@ def has_explicit_missing_price(product):
     for offer in _iter_offers(product):
         if _ci_has(offer, 'price') and _is_missing(_ci_get(offer, 'price')):
             return True
+        for specification in _as_list(_ci_get(offer, 'priceSpecification')):
+            specification = _unwrap_properties(specification)
+            if (_ci_has(specification, 'price')
+                    and _is_missing(_ci_get(specification, 'price'))):
+                return True
+    for variant in _as_list(_ci_get(product, 'hasVariant')):
+        if (isinstance(variant, dict)
+                and _ci_has(variant, 'price')
+                and _is_missing(_ci_get(variant, 'price'))):
+            return True
     return _ci_has(product, 'price') and _is_missing(_ci_get(product, 'price'))
 
 
@@ -502,7 +520,7 @@ def og_currency(og_data):
     for key in ('product:sale_price:currency', 'og:sale_price:currency',
                 'product:price:currency', 'og:price:currency'):
         if key in og_data and not _is_missing(og_data[key]):
-            return str(og_data[key]).strip()
+            return str(og_data[key]).strip().upper()
     return None
 
 
@@ -604,8 +622,7 @@ class MicrodataExtractor(HTMLParser):
             'currencies': [],
             'availabilities': [],
             'product_scopes': 0,
-            'product_ids': [],
-            'product_skus': [],
+            'product_keys': [],
         }
         self.current_itemprop = None
 
@@ -618,7 +635,7 @@ class MicrodataExtractor(HTMLParser):
                 self.microdata['product_scopes'] += 1
                 itemid = attrs_dict.get('itemid')
                 if itemid:
-                    self.microdata['product_ids'].append(itemid)
+                    self.microdata['product_keys'].append(itemid)
 
         if 'itemprop' in attrs_dict:
             itemprop = attrs_dict['itemprop']
@@ -631,11 +648,12 @@ class MicrodataExtractor(HTMLParser):
                 else:
                     self.current_itemprop = 'price'
 
-            elif itemprop == 'sku':
-                if 'content' in attrs_dict:
-                    self.microdata['product_skus'].append(attrs_dict['content'])
+            elif itemprop in ('sku', 'productID', 'url'):
+                value = attrs_dict.get('content') or attrs_dict.get('href')
+                if value:
+                    self.microdata['product_keys'].append(value)
                 else:
-                    self.current_itemprop = 'sku'
+                    self.current_itemprop = itemprop
 
             elif itemprop == 'priceCurrency':
                 if 'content' in attrs_dict:
@@ -672,10 +690,10 @@ class MicrodataExtractor(HTMLParser):
             if currency:
                 self.microdata['currency'] = currency
                 self.microdata['currencies'].append(currency)
-        elif self.current_itemprop == 'sku':
-            sku = data.strip()
-            if sku:
-                self.microdata['product_skus'].append(sku)
+        elif self.current_itemprop in ('sku', 'productID', 'url'):
+            value = data.strip()
+            if value:
+                self.microdata['product_keys'].append(value)
         elif self.current_itemprop == 'availability':
             availability = data.strip()
             if availability:
@@ -823,7 +841,7 @@ def _query_price_availability_scoped(extracted_data, url):
         scopes = microdata.get('product_scopes', 0)
         confirmed = False
         if scopes == 1:
-            keys = list(microdata.get('product_ids', [])) + list(microdata.get('product_skus', []))
+            keys = list(microdata.get('product_keys', []))
             url_tokens = watch_url_product_keys(url)
             confirmed = bool(url_tokens) and _match_keys_score(keys, url_tokens) > 0
             if confirmed:
@@ -859,7 +877,7 @@ def _query_price_availability_scoped(extracted_data, url):
     if scopes > 1:
         return {}
     if scopes == 1 and url:
-        keys = list(microdata.get('product_ids', [])) + list(microdata.get('product_skus', []))
+        keys = list(microdata.get('product_keys', []))
         url_tokens = watch_url_product_keys(url)
         if (url_tokens
                 and any(_significant_tokens(key) for key in keys)
@@ -886,8 +904,9 @@ def _query_price_availability_scoped(extracted_data, url):
 
     currencies = []
     for raw_currency in microdata.get('currencies', []):
-        if not _is_missing(raw_currency) and raw_currency not in currencies:
-            currencies.append(str(raw_currency).strip())
+        currency = str(raw_currency).strip().upper()
+        if not _is_missing(raw_currency) and currency not in currencies:
+            currencies.append(currency)
     og_currency_value = og_currency(og_data)
     if og_currency_value and og_currency_value not in currencies:
         currencies.append(og_currency_value)
