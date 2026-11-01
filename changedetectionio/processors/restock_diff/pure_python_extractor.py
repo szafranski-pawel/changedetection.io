@@ -31,14 +31,14 @@ def _is_missing(value):
 
 def _as_price(value):
     import math
-    if _is_missing(value) or isinstance(value, (bool, list, dict, tuple)):
+    if _is_missing(value) or isinstance(value, (bool, list, dict, tuple, set, frozenset)):
         return None
     if isinstance(value, (int, float)):
         value = float(value)
         return value if math.isfinite(value) else None
     try:
         price = Restock().parse_currency(str(value))
-    except Exception:
+    except (ValueError, ArithmeticError):
         return None
     return price if price is not None and math.isfinite(price) else None
 
@@ -421,6 +421,8 @@ def select_main_product(jsonld_blocks, url=None):
         return scored[0][3]
 
     top_level_products = [product for product, top_level in candidates if top_level]
+    if not top_level_products and len(candidates) == 1:
+        return candidates[0][0]
     top_level_products = _collapse_duplicate_products(top_level_products)
     if len(top_level_products) == 1:
         return top_level_products[0]

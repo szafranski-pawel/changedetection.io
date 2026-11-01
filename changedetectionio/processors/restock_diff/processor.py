@@ -106,13 +106,21 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                               in _collect_product_candidates(data.get('json-ld', []))
                               if top_level]
         if len(top_level_products) > 1:
-            prices = {values.get('price')
-                      for values in (product_offer_data(product) for product in top_level_products)
-                      if values.get('price') is not None}
-            if (len(prices) > 1
-                    and not any(has_explicit_missing_price(product)
-                                for product in top_level_products)):
+            values = [product_offer_data(product) for product in top_level_products]
+            prices = {data.get('price') for data in values if data.get('price') is not None}
+            has_null_price = any(has_explicit_missing_price(product)
+                                 for product in top_level_products)
+            if len(prices) > 1 and not has_null_price:
                 raise MoreThanOnePriceFound()
+            if len(prices) == 1 and not has_null_price:
+                for data in values:
+                    if data.get('price') is not None:
+                        result = dict(data)
+                        for other in values:
+                            for field in ('currency', 'availability'):
+                                if result.get(field) is None and other.get(field) is not None:
+                                    result[field] = other[field]
+                        return Restock(result), False
 
     if main_product:
         result = product_offer_data(main_product)

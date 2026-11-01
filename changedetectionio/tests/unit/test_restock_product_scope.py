@@ -164,6 +164,40 @@ class TestRestockProductScope(unittest.TestCase):
         with self.assertRaises(restock_diff.MoreThanOnePriceFound):
             extruct(html, url)
 
+    def test_multiple_unmatched_jsonld_products_with_same_price_are_used(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "A",
+         "sku": "AAA111", "offers": {"@type": "Offer", "price": "10",
+          "priceCurrency": "PLN", "availability": "http://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "B",
+         "sku": "BBB222", "offers": {"@type": "Offer", "price": "10",
+          "priceCurrency": "PLN", "availability": "http://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/foo'
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(extract(html, url).get('availability'), 'instock')
+
+    def test_itemlist_with_only_product_is_used(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ItemList",
+         "itemListElement": [{"@type": "Product", "name": "Only",
+          "sku": "MAIN123", "offers": {"@type": "Offer", "price": "10",
+           "priceCurrency": "PLN", "availability": "http://schema.org/InStock"}}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/black-dress'
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(extract(html, url).get('availability'), 'instock')
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
+
     def test_itemlist_recommendations_are_not_treated_as_top_level(self):
         html = """<html><body>
         <script type="application/ld+json">
@@ -584,6 +618,8 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIsNone(_as_price(True))
         self.assertIsNone(_as_price(['10', '20']))
         self.assertIsNone(_as_price({'price': '10'}))
+        self.assertIsNone(_as_price(('10',)))
+        self.assertIsNone(_as_price({10}))
 
     def test_restock_normalizes_missing_currency_and_availability(self):
         from changedetectionio.processors.restock_diff import Restock
@@ -600,6 +636,10 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIsNone(Restock({'last_price': False}).get('last_price'))
         for bad in ('--', '.', '-', '1.2.3'):
             self.assertIsNone(Restock({'price': bad}).get('price'))
+        for bad in (float('nan'), float('inf'), [10], {'price': 10}):
+            self.assertIsNone(Restock({'price': bad}).get('price'))
+        for bad in ('--', '1.2.3'):
+            self.assertIsNone(Restock().parse_currency(bad))
 
     def test_product_level_fields_without_offers(self):
         html = """<html><body>
@@ -881,6 +921,11 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(extract(html, url).get('price'), 49.99)
         self.assertEqual(pure(html, url).get('price'), 49.99)
         self.assertEqual(extruct(html, url).get('price'), 49.99)
+
+        explicit_null = html.replace(
+            '"priceCurrency": "PLN"', '"price": "null", "priceCurrency": "PLN"', 1)
+        self.assertIsNone(extract(explicit_null, url).get('price'))
+        self.assertIsNone(pure(explicit_null, url).get('price'))
 
     def test_combine_fills_currency_and_availability(self):
         from changedetectionio.processors.restock_diff import Restock

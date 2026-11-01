@@ -3,6 +3,7 @@ from babel.numbers import parse_decimal
 from changedetectionio.model.Watch import model as BaseWatch
 from decimal import Decimal, InvalidOperation
 from typing import Union
+import math
 import re
 
 # Processor capabilities
@@ -44,7 +45,10 @@ class Restock(dict):
         if standardized_value:
             # Convert to float
             # @todo locale needs to be the locale of the webpage
-            return float(parse_decimal(standardized_value, locale='en'))
+            try:
+                return float(parse_decimal(standardized_value, locale='en'))
+            except (ValueError, ArithmeticError):
+                return None
 
         return None
 
@@ -73,13 +77,15 @@ class Restock(dict):
     def __setitem__(self, key, value):
         # Custom logic to handle setting price and last_price
         if key == 'price' or key == 'last_price':
-            if isinstance(value, bool):
+            if isinstance(value, (bool, list, dict, tuple, set, frozenset)):
                 value = None
             elif isinstance(value, str):
                 try:
                     value = self.parse_currency(raw_value=value)
                 except (ValueError, ArithmeticError):
                     value = None
+            elif isinstance(value, (int, float)) and not math.isfinite(float(value)):
+                value = None
         elif key in ('currency', 'availability') and isinstance(value, str):
             # Some sites (and our old extractor) emit the literal string "null".
             if value.strip().lower() in MISSING_STRINGS:
