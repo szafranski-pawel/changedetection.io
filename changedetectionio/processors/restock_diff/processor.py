@@ -178,11 +178,6 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     return Restock(result), False
 
 
-def _scoped_get_itemprop_availability(data, url):
-    value, _had_main = _scoped_get_itemprop_availability_with_provenance(data, url)
-    return value
-
-
 def _safe_float(value):
     import math
     try:

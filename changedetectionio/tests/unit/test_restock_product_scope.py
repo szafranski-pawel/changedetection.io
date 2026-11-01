@@ -309,6 +309,51 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(pure(html, url).get('price'), 74.9)
         self.assertEqual(extruct(html, url).get('price'), 74.9)
 
+    def test_og_sale_price_precedence_without_jsonld_or_microdata(self):
+        html = """<html><head>
+        <meta property="product:price:amount" content="74.90" />
+        <meta property="product:sale_price:amount" content="59.90" />
+        <meta property="product:original_price:amount" content="249.90" />
+        <meta property="product:min_30d_price:amount" content="124.90" />
+        <meta property="product:price:currency" content="PLN" />
+        </head><body></body></html>"""
+
+        url = 'https://shop.example/product/og-only-OG123.html'
+        self.assertEqual(extract(html, url).get('price'), 59.9)
+        self.assertEqual(pure(html, url).get('price'), 59.9)
+        self.assertEqual(extruct(html, url).get('price'), 59.9)
+
+    def test_worker_passes_url_and_returns_scoped_result(self):
+        import json
+        from multiprocessing import Pipe
+
+        from changedetectionio.processors.restock_diff.processor import (
+            _extract_itemprop_availability_worker,
+        )
+
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main Product",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "price": "10",
+         "priceCurrency": "PLN", "availability": "http://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Recommendation",
+         "offers": {"@type": "Offer", "price": "99", "priceCurrency": "PLN",
+         "availability": "http://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        parent, child = Pipe()
+        parent.send_bytes(html.encode('utf-8'))
+        _extract_itemprop_availability_worker(
+            child, 'https://shop.example/product/main-MAIN123.html')
+        result = json.loads(parent.recv_bytes().decode('utf-8'))
+
+        self.assertTrue(result['success'])
+        self.assertEqual(result['data']['price'], 10.0)
+        self.assertTrue(result['had_main'])
+
     def test_product_group_variant_disagreement_is_partial(self):
         html = """<html><body>
         <script type="application/ld+json">
