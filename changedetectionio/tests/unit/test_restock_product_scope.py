@@ -3,10 +3,22 @@
 import unittest
 
 import changedetectionio.processors.restock_diff.processor as restock_diff
+from changedetectionio.processors.restock_diff.pure_python_extractor import (
+    extract_metadata_pure_python,
+    query_price_availability,
+)
 
 
 def extract(html, url):
     return restock_diff.extract_itemprop_availability_safe(html, url=url)
+
+
+def pure(html, url):
+    return query_price_availability(extract_metadata_pure_python(html), url=url)
+
+
+def extruct(html, url):
+    return restock_diff.get_itemprop_availability(html, url=url)
 
 
 class TestRestockProductScope(unittest.TestCase):
@@ -33,9 +45,12 @@ class TestRestockProductScope(unittest.TestCase):
         </div>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/main-blouse-CL1294P.html')
+        url = 'https://shop.example/product/main-blouse-CL1294P.html'
+        value = extract(html, url)
         self.assertIsNone(value.get('price'))
         self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertEqual(pure(html, url), {})
+        self.assertEqual(extruct(html, url).get('availability'), 'outofstock')
 
     def test_main_product_price_beats_carousel(self):
         html = """<html><body>
@@ -60,10 +75,13 @@ class TestRestockProductScope(unittest.TestCase):
         </div>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/main-blouse-CL1294P.html')
+        url = 'https://shop.example/product/main-blouse-CL1294P.html'
+        value = extract(html, url)
         self.assertEqual(value.get('price'), 189.9)
         self.assertEqual(value.get('currency'), 'PLN')
         self.assertEqual(value.get('availability'), 'instock')
+        self.assertEqual(pure(html, url).get('price'), 189.9)
+        self.assertEqual(extruct(html, url).get('price'), 189.9)
 
     def test_itemlist_recommendations_are_not_treated_as_top_level(self):
         html = """<html><body>
@@ -84,11 +102,17 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        with_sku = extract(html, 'https://shop.example/product/main-MAIN123.html')
+        with_sku_url = 'https://shop.example/product/main-MAIN123.html'
+        with_sku = extract(html, with_sku_url)
         self.assertEqual(with_sku.get('price'), 10.0)
+        self.assertEqual(pure(html, with_sku_url).get('price'), 10.0)
+        self.assertEqual(extruct(html, with_sku_url).get('price'), 10.0)
 
-        without_token = extract(html, 'https://shop.example/product/foo')
+        without_token_url = 'https://shop.example/product/foo'
+        without_token = extract(html, without_token_url)
         self.assertEqual(without_token.get('price'), 10.0)
+        self.assertEqual(pure(html, without_token_url).get('price'), 10.0)
+        self.assertEqual(extruct(html, without_token_url).get('price'), 10.0)
 
     def test_null_main_with_priced_recommendation_does_not_guess(self):
         html = """<html><body>
@@ -103,8 +127,11 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/foo')
+        url = 'https://shop.example/product/foo'
+        value = extract(html, url)
         self.assertIsNone(value.get('price'))
+        self.assertIsNone(pure(html, url).get('price'))
+        self.assertIsNone(extruct(html, url).get('price'))
 
     def test_microdata_url_match_beats_duplicate_name(self):
         html = """<html><body>
@@ -130,9 +157,12 @@ class TestRestockProductScope(unittest.TestCase):
         </div>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/main-MAIN123.html')
+        url = 'https://shop.example/product/main-MAIN123.html'
+        value = extract(html, url)
         self.assertIsNone(value.get('price'))
         self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertIsNone(pure(html, url).get('price'))
+        self.assertEqual(extruct(html, url).get('availability'), 'outofstock')
 
     def test_query_param_color_size_matching_is_not_substring(self):
         from changedetectionio.processors.restock_diff.pure_python_extractor import watch_url_product_keys
@@ -158,8 +188,11 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/pl/torby/3230-sicily-bag.html')
+        url = 'https://shop.example/pl/torby/3230-sicily-bag.html'
+        value = extract(html, url)
         self.assertEqual(value.get('price'), 10.0)
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
 
     def test_recommendation_jsonld_before_main_is_ignored(self):
         html = """<html><body>
@@ -175,8 +208,11 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/main-blouse-CL1294P.html')
+        url = 'https://shop.example/product/main-blouse-CL1294P.html'
+        value = extract(html, url)
         self.assertEqual(value.get('price'), 189.9)
+        self.assertEqual(pure(html, url).get('price'), 189.9)
+        self.assertEqual(extruct(html, url).get('price'), 189.9)
 
     def test_pure_partial_survives_extruct_failure(self):
         # Kazar's rendered page can make extruct fail even though pure Python
@@ -224,8 +260,10 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/broken-BROKEN123.html')
+        url = 'https://shop.example/product/broken-BROKEN123.html'
+        value = extract(html, url)
         self.assertIsNone(value.get('price'))
+        self.assertIsNone(pure(html, url).get('price'))
 
     def test_no_product_jsonld_uses_single_microdata_price(self):
         # Kazar-style page: no Product JSON-LD, one microdata Product + product:* OG.
@@ -242,10 +280,13 @@ class TestRestockProductScope(unittest.TestCase):
         </div>
         </body></html>"""
 
-        value = extract(html, 'https://kazar.com/leather-boots-93220-01-00.html')
+        url = 'https://kazar.com/leather-boots-93220-01-00.html'
+        value = extract(html, url)
         self.assertEqual(value.get('price'), 1299.0)
         self.assertEqual(value.get('currency'), 'PLN')
         self.assertIsNone(value.get('availability'))
+        self.assertEqual(pure(html, url).get('price'), 1299.0)
+        self.assertEqual(extruct(html, url).get('price'), 1299.0)
 
     def test_sale_price_wins_over_original_and_min_30d(self):
         html = """<html><head>
@@ -261,9 +302,12 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://esotiq.com/pl/pl/dress-black-44132-99X')
+        url = 'https://esotiq.com/pl/pl/dress-black-44132-99X'
+        value = extract(html, url)
         self.assertEqual(value.get('price'), 74.9)
         self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertEqual(pure(html, url).get('price'), 74.9)
+        self.assertEqual(extruct(html, url).get('price'), 74.9)
 
     def test_product_group_variant_disagreement_is_partial(self):
         html = """<html><body>
@@ -281,9 +325,12 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/main-SKU123.html')
+        url = 'https://shop.example/product/main-SKU123.html'
+        value = extract(html, url)
         self.assertIsNone(value.get('price'))
         self.assertIsNone(value.get('availability'))
+        self.assertIsNone(pure(html, url).get('price'))
+        self.assertIsNone(extruct(html, url).get('price'))
 
     def test_zero_price_is_valid(self):
         html = """<html><body>
@@ -294,9 +341,12 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/free-ZERO123.html')
+        url = 'https://shop.example/product/free-ZERO123.html'
+        value = extract(html, url)
         self.assertEqual(value.get('price'), 0.0)
         self.assertEqual(value.get('availability'), 'instock')
+        self.assertEqual(pure(html, url).get('price'), 0.0)
+        self.assertEqual(extruct(html, url).get('price'), 0.0)
 
     def test_price_specification_currency(self):
         html = """<html><body>
@@ -309,9 +359,12 @@ class TestRestockProductScope(unittest.TestCase):
         </script>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/widget-WIDGET123.html')
+        url = 'https://shop.example/product/widget-WIDGET123.html'
+        value = extract(html, url)
         self.assertEqual(value.get('price'), 155.55)
         self.assertEqual(value.get('currency'), 'USD')
+        self.assertEqual(pure(html, url).get('currency'), 'USD')
+        self.assertEqual(extruct(html, url).get('currency'), 'USD')
 
     def test_no_product_jsonld_availability_only_is_kept(self):
         html = """<html><body>
@@ -323,9 +376,12 @@ class TestRestockProductScope(unittest.TestCase):
         </div>
         </body></html>"""
 
-        value = extract(html, 'https://shop.example/product/main-93220-01-00.html')
+        url = 'https://shop.example/product/main-93220-01-00.html'
+        value = extract(html, url)
         self.assertIsNone(value.get('price'))
         self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertEqual(pure(html, url).get('availability'), 'outofstock')
+        self.assertEqual(extruct(html, url).get('availability'), 'outofstock')
 
     def test_no_product_jsonld_multiple_microdata_products_refuses(self):
         html = """<html><body>
@@ -343,8 +399,10 @@ class TestRestockProductScope(unittest.TestCase):
         </div>
         </body></html>"""
 
+        url = 'https://shop.example/product/main-93220-01-00.html'
+        self.assertEqual(pure(html, url), {})
         with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extract(html, 'https://shop.example/product/main-93220-01-00.html')
+            extract(html, url)
 
 
 if __name__ == '__main__':
