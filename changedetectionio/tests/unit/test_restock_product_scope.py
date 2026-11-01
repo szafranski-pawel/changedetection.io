@@ -309,6 +309,181 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(pure(html, url).get('price'), 74.9)
         self.assertEqual(extruct(html, url).get('price'), 74.9)
 
+    def test_graph_product_selection(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@graph": [
+          {"@type": "Product", "name": "Main Product", "sku": "MAIN123",
+           "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
+                      "availability": "http://schema.org/InStock"}},
+          {"@type": "ItemList", "itemListElement": [
+            {"@type": "Product", "name": "Recommendation",
+             "offers": {"@type": "Offer", "price": "99", "priceCurrency": "PLN",
+                        "availability": "http://schema.org/InStock"}}
+          ]}
+        ]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
+
+    def test_microdata_tie_prefers_earlier_candidate(self):
+        from changedetectionio.processors.restock_diff.pure_python_extractor import select_microdata_product
+
+        first = {'type': 'http://schema.org/Product',
+                 'id': 'https://shop.example/product/one-MAIN123.html',
+                 'properties': {'name': 'One', 'offers': []}}
+        second = {'type': 'http://schema.org/Product',
+                  'id': 'https://shop.example/product/two-MAIN123.html',
+                  'properties': {'name': 'Two', 'offers': []}}
+
+        selected = select_microdata_product(
+            [first, second], url='https://shop.example/product/main-MAIN123.html')
+        self.assertIs(selected, first)
+
+    def test_extruct_og_flat_skips_malformed_pair(self):
+        from changedetectionio.processors.restock_diff.processor import _extruct_og_flat
+
+        result = _extruct_og_flat({'opengraph': [{'properties': [
+            ['bad'], ['product:price:amount', '10']]}]})
+        self.assertEqual(result.get('product:price:amount'), '10')
+
+    def test_safe_float_and_as_price_edges(self):
+        from changedetectionio.processors.restock_diff.processor import _safe_float
+        from changedetectionio.processors.restock_diff.pure_python_extractor import _as_price
+
+        self.assertEqual(_safe_float('12.5'), 12.5)
+        self.assertIsNone(_safe_float('nan'))
+        self.assertIsNone(_safe_float('inf'))
+        self.assertEqual(_as_price('12.5'), 12.5)
+        self.assertIsNone(_as_price(float('nan')))
+        self.assertIsNone(_as_price(float('inf')))
+        self.assertIsNone(_as_price(True))
+
+    def test_restock_normalizes_missing_currency_and_availability(self):
+        from changedetectionio.processors.restock_diff import Restock
+
+        missing = Restock({'currency': 'null', 'availability': 'n/a'})
+        self.assertIsNone(missing.get('currency'))
+        self.assertIsNone(missing.get('availability'))
+
+        present = Restock({'currency': 'PLN', 'availability': 'InStock'})
+        self.assertEqual(present.get('currency'), 'PLN')
+        self.assertEqual(present.get('availability'), 'InStock')
+
+    def test_product_level_fields_without_offers(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Direct Fields",
+         "sku": "DIRECT123", "price": "12.5", "priceCurrency": "USD",
+         "availability": "http://schema.org/InStock"}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/direct-DIRECT123.html'
+        self.assertEqual(extract(html, url).get('price'), 12.5)
+        self.assertEqual(pure(html, url).get('currency'), 'USD')
+        self.assertEqual(extruct(html, url).get('availability'), 'instock')
+
+    def test_aggregate_offer_low_price(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Aggregate",
+         "sku": "AGG123", "offers": {"@type": "AggregateOffer", "lowPrice": "10",
+         "offerCount": 1, "priceCurrency": "PLN",
+         "availability": "http://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/aggregate-AGG123.html'
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
+
+        multi = html.replace('"offerCount": 1', '"offerCount": 2')
+        self.assertIsNone(pure(multi, url).get('price'))
+        self.assertIsNone(extruct(multi, url).get('price'))
+
+    def test_og_currency_fallbacks(self):
+        from changedetectionio.processors.restock_diff.pure_python_extractor import og_currency
+
+        self.assertEqual(og_currency({'product:sale_price:currency': 'EUR'}), 'EUR')
+        self.assertEqual(og_currency({'product:price:currency': 'PLN'}), 'PLN')
+        self.assertEqual(og_currency({'og:price:currency': 'USD'}), 'USD')
+        self.assertIsNone(og_currency({'product:price:currency': 'null'}))
+
+    def test_extruct_og_flat_handles_dict_and_list_properties(self):
+        from changedetectionio.processors.restock_diff.processor import _extruct_og_flat
+
+        list_form = _extruct_og_flat({'opengraph': [{'properties': [
+            ['product:price:amount', '10'], ['product:price:currency', 'PLN']]}]})
+        self.assertEqual(list_form['product:price:amount'], '10')
+        self.assertEqual(list_form['product:price:currency'], 'PLN')
+
+        dict_form = _extruct_og_flat({'opengraph': [{'properties': {
+            'og:price:amount': '20', 'og:price:currency': 'EUR'}}]})
+        self.assertEqual(dict_form['og:price:amount'], '20')
+        self.assertEqual(dict_form['og:price:currency'], 'EUR')
+
+    def test_product_jsonld_og_fills_missing_currency_and_availability(self):
+        html = """<html><head>
+        <meta property="product:price:currency" content="PLN" />
+        <meta property="product:availability" content="in stock" />
+        </head><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "OG Fill",
+         "sku": "OGFILL123", "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/og-fill-OGFILL123.html'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertEqual(value.get('currency'), 'PLN')
+        self.assertEqual(value.get('availability'), 'instock')
+        self.assertEqual(pure(html, url).get('currency'), 'PLN')
+        self.assertEqual(extruct(html, url).get('availability'), 'instock')
+
+    def test_combine_fills_currency_and_availability(self):
+        from changedetectionio.processors.restock_diff import Restock
+        from changedetectionio.processors.restock_diff.processor import _combine_with_pure_partial
+
+        merged = _combine_with_pure_partial(
+            {'price': 10.0},
+            Restock({'currency': 'PLN', 'availability': 'instock'}),
+            scoped=True, pure_had_main=True, fetched_had_main=True)
+        self.assertEqual(merged.get('price'), 10.0)
+        self.assertEqual(merged.get('currency'), 'PLN')
+        self.assertEqual(merged.get('availability'), 'instock')
+
+    def test_select_microdata_product_prefers_brand_or_category(self):
+        from changedetectionio.processors.restock_diff.pure_python_extractor import select_microdata_product
+
+        plain = {'type': 'http://schema.org/Product',
+                 'properties': {'name': 'Same Name', 'offers': []}}
+        branded = {'type': 'http://schema.org/Product',
+                   'properties': {'name': 'Same Name', 'brand': 'Brand', 'offers': []}}
+        categorized = {'type': 'http://schema.org/Product',
+                       'properties': {'name': 'Same Name', 'category': 'Cat', 'offers': []}}
+
+        selected = select_microdata_product(
+            [plain, branded], jsonld_product={'name': 'Same Name'})
+        self.assertIs(selected, branded)
+        selected = select_microdata_product(
+            [plain, categorized], jsonld_product={'name': 'Same Name'})
+        self.assertIs(selected, categorized)
+
+    def test_url_keys_handle_dwvar_and_uppercase_extension(self):
+        from changedetectionio.processors.restock_diff.pure_python_extractor import watch_url_product_keys
+
+        keys = watch_url_product_keys(
+            'https://shop.example/product/foo-BO1294C.HTML?dwvar_BO1294C_Z_COL_INT=9887')
+        self.assertIn('bo1294c', keys)
+        self.assertIn('9887', keys)
+
     def test_og_sale_price_precedence_without_jsonld_or_microdata(self):
         html = """<html><head>
         <meta property="product:price:amount" content="74.90" />
