@@ -145,30 +145,28 @@ def watch_url_product_keys(url):
     return tokens
 
 
-def _product_keys(product):
+def _product_keys(product, url_matchable=False):
+    names = ('sku', 'productID', 'productGroupID', '@id', 'url')
+    variant_names = ('sku', 'productID')
+    if not url_matchable:
+        names += ('mpn', 'gtin13')
+        variant_names += ('mpn', 'gtin13')
+
     keys = []
-    for name in ('sku', 'productID', 'productGroupID', 'mpn', 'gtin13', '@id', 'url'):
-        value = _ci_get(product, name)
-        if isinstance(value, str):
-            keys.append(value)
+    for name in names:
+        keys.extend(_string_values(_ci_get(product, name)))
 
     for variant in _as_list(_ci_get(product, 'hasVariant')):
         if isinstance(variant, dict):
-            for name in ('sku', 'productID', 'mpn', 'gtin13'):
-                value = _ci_get(variant, name)
-                if isinstance(value, str):
-                    keys.append(value)
+            for name in variant_names:
+                keys.extend(_string_values(_ci_get(variant, name)))
     return keys
 
 
 def _string_values(value):
-    if isinstance(value, str):
-        return [value]
-    if isinstance(value, list):
-        return [str(entry) for entry in value if isinstance(entry, (str, int, float))]
-    if isinstance(value, (int, float)):
-        return [str(value)]
-    return []
+    values = value if isinstance(value, list) else [value]
+    return [str(entry) for entry in values
+            if isinstance(entry, (str, int, float)) and not isinstance(entry, bool)]
 
 
 def _match_keys_score(keys, url_tokens):
@@ -177,8 +175,14 @@ def _match_keys_score(keys, url_tokens):
 
     best = 0
     for key in keys:
-        tokens = _significant_tokens(key)
-        if not tokens or tokens[0] not in url_tokens:
+        tokens = _significant_tokens(key.split('#', 1)[0].split('?', 1)[0])
+        if not tokens:
+            continue
+        # URL/id keys can start with a shared category id, so only the last
+        # path segment is a reliable product code there. Plain SKUs/ids usually
+        # start with the product code and may end with a colour or size code.
+        candidates = tokens[-1:] if '/' in key else tokens[:1]
+        if not any(token in url_tokens for token in candidates):
             continue
         score = 1
         if all(token in url_tokens for token in tokens):
@@ -309,7 +313,7 @@ def product_offer_data(product):
     """Return price/currency/availability for one selected product only.
 
     Variants/offers that disagree produce a partial result instead of silently
-    choosing the first one. This keeps the result atomic per product.
+    choosing the first one. Each field is decided independently.
     """
     if not isinstance(product, dict):
         return {}
@@ -355,7 +359,7 @@ def product_offer_data(product):
     return result
 
 
-def select_main_product(jsonld_blocks, url=None, legacy=False):
+def select_main_product(jsonld_blocks, url=None):
     """Select the Product/ProductGroup that belongs to the watched URL."""
     candidates = _collect_product_candidates(jsonld_blocks or [])
     if not candidates:
@@ -376,10 +380,10 @@ def select_main_product(jsonld_blocks, url=None, legacy=False):
 
     top_level_products = [product for product, top_level in candidates if top_level]
     if len(top_level_products) == 1:
-        return top_level_products[0]
-
-    if legacy and top_level_products:
-        return top_level_products[0]
+        product = top_level_products[0]
+        if not url_tokens or not any(
+                _significant_tokens(key) for key in _product_keys(product, url_matchable=True)):
+            return product
     return None
 
 
@@ -392,16 +396,14 @@ def microdata_item_types(item):
     return []
 
 
-def select_microdata_product(items, url=None, jsonld_product=None, legacy=False):
-    """Select the microdata Product matching the already-selected JSON-LD product."""
+def select_microdata_product(items, url=None, jsonld_product=None):
+    """Select the microdata Product matching the watched URL or JSON-LD product."""
     candidates = [item for item in (items or [])
                   if 'product' in microdata_item_types(item)
                   or 'productgroup' in microdata_item_types(item)]
     if not candidates:
         return None
 
-    # URL/id/SKU matching is stronger than a name match: cross-sell tiles often
-    # reuse the same product name and must not fill a null main-product price.
     url_tokens = watch_url_product_keys(url)
     if url_tokens:
         scored = []
@@ -418,23 +420,19 @@ def select_microdata_product(items, url=None, jsonld_product=None, legacy=False)
             scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
             return scored[0][2]
 
+    # A unique name match can supply availability when the JSON-LD omits it.
+    # Duplicate or missing name matches are carousel tiles and must stay
+    # ambiguous, even when only one microdata item exists.
     if isinstance(jsonld_product, dict):
         target_name = _normalize_name(_ci_get(jsonld_product, 'name'))
         if target_name:
             named = [item for item in candidates
                      if any(_normalize_name(value) == target_name
                             for value in _string_values((item.get('properties') or {}).get('name')))]
-            if named:
-                with_brand = [item for item in named
-                              if (item.get('properties') or {}).get('brand')
-                              or (item.get('properties') or {}).get('category')]
-                return (with_brand or named)[0]
+            return named[0] if len(named) == 1 else None
+        return None
 
-    if len(candidates) == 1:
-        return candidates[0]
-    if legacy:
-        return candidates[0]
-    return None
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def microdata_product_data(item):

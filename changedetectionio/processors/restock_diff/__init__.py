@@ -73,7 +73,9 @@ class Restock(dict):
     def __setitem__(self, key, value):
         # Custom logic to handle setting price and last_price
         if key == 'price' or key == 'last_price':
-            if isinstance(value, str):
+            if isinstance(value, bool):
+                value = None
+            elif isinstance(value, str):
                 value = self.parse_currency(raw_value=value)
         elif key in ('currency', 'availability') and isinstance(value, str):
             # Some sites (and our old extractor) emit the literal string "null".

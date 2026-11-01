@@ -107,11 +107,13 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             if availability:
                 result['availability'] = availability
 
+        # Microdata can confirm fields the JSON-LD omits, but never its price:
+        # a null-priced main product must stay unavailable.
         microdata_item = select_microdata_product(
             data.get('microdata', []), url=url, jsonld_product=main_product)
         if microdata_item:
             microdata_values = microdata_product_data(microdata_item)
-            for field in ('price', 'currency', 'availability'):
+            for field in ('currency', 'availability'):
                 if result.get(field) is None and microdata_values.get(field) is not None:
                     result[field] = microdata_values[field]
 
@@ -180,6 +182,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
 
 def _safe_float(value):
     import math
+    if isinstance(value, bool):
+        return None
     try:
         result = float(value)
     except (TypeError, ValueError):
