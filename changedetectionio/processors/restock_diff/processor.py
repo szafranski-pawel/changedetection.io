@@ -83,6 +83,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     extraction engine.
     """
     from .pure_python_extractor import (
+        _collect_product_candidates,
         has_explicit_missing_price,
         microdata_item_types,
         microdata_product_data,
@@ -100,6 +101,19 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                      or 'productgroup' in microdata_item_types(item)]
     main_product = select_main_product(data.get('json-ld', []), url=url)
 
+    if not main_product:
+        top_level_products = [product for product, top_level
+                              in _collect_product_candidates(data.get('json-ld', []))
+                              if top_level]
+        if len(top_level_products) > 1:
+            prices = {values.get('price')
+                      for values in (product_offer_data(product) for product in top_level_products)
+                      if values.get('price') is not None}
+            if (len(prices) > 1
+                    and not any(has_explicit_missing_price(product)
+                                for product in top_level_products)):
+                raise MoreThanOnePriceFound()
+
     if main_product:
         result = product_offer_data(main_product)
 
@@ -116,6 +130,11 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                     and not has_explicit_missing_price(main_product)
                     and microdata_values.get('price') is not None):
                 result['price'] = microdata_values['price']
+
+        if result.get('price') is None and not has_explicit_missing_price(main_product):
+            price = og_price(og_data)
+            if price is not None:
+                result['price'] = price
 
         # OpenGraph is page-level. If microdata has products but none was
         # matched, it is ambiguous and OG must not guess for it.

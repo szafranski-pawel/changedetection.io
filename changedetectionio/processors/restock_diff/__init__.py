@@ -76,7 +76,10 @@ class Restock(dict):
             if isinstance(value, bool):
                 value = None
             elif isinstance(value, str):
-                value = self.parse_currency(raw_value=value)
+                try:
+                    value = self.parse_currency(raw_value=value)
+                except (ValueError, ArithmeticError):
+                    value = None
         elif key in ('currency', 'availability') and isinstance(value, str):
             # Some sites (and our old extractor) emit the literal string "null".
             if value.strip().lower() in MISSING_STRINGS:

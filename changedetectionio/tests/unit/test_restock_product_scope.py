@@ -126,6 +126,44 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(pure(html, url).get('price'), 10.0)
         self.assertEqual(extruct(html, url).get('price'), 10.0)
 
+    def test_duplicate_blocks_still_match_url_sku(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/more-collagen", "sku": "AAA111",
+         "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/more-collagen", "sku": "BBB222",
+         "offers": {"@type": "Offer", "price": "20"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/more-collagen?sku=BBB222'
+        self.assertEqual(extract(html, url).get('price'), 20.0)
+        self.assertEqual(pure(html, url).get('price'), 20.0)
+        self.assertEqual(extruct(html, url).get('price'), 20.0)
+
+    def test_multiple_unmatched_jsonld_products_raise(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "A",
+         "sku": "AAA111", "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "B",
+         "sku": "BBB222", "offers": {"@type": "Offer", "price": "20"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/foo'
+        self.assertEqual(pure(html, url), {})
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extruct(html, url)
+
     def test_itemlist_recommendations_are_not_treated_as_top_level(self):
         html = """<html><body>
         <script type="application/ld+json">
@@ -382,16 +420,18 @@ class TestRestockProductScope(unittest.TestCase):
         # A different product under the same numeric category prefix must not match.
         other = main.replace('"name": "Main",', '"name": "Other",').replace(
             'main-MAIN123.html', 'other-OTHER999.html')
-        self.assertIsNone(extract(other, url).get('price'))
         self.assertIsNone(pure(other, url).get('price'))
-        self.assertIsNone(extruct(other, url).get('price'))
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(other, url)
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extruct(other, url)
 
-        # A single product with a contradicting SKU is not assumed to be the main one.
+        # A single top-level product is still the only candidate.
         sku_only = """<html><body><script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "Other",
          "sku": "OTHER999", "offers": {"@type": "Offer", "price": "10"}}
         </script></body></html>"""
-        self.assertIsNone(extract(sku_only, url).get('price'))
+        self.assertEqual(extract(sku_only, url).get('price'), 10.0)
 
         # GTIN/MPN never appear in URLs, but they do not contradict one either.
         gtin_only = sku_only.replace('"sku": "OTHER999"', '"gtin13": "1234567890123"')
@@ -413,9 +453,11 @@ class TestRestockProductScope(unittest.TestCase):
         </body></html>"""
 
         url = 'https://shop.example/product/black-dress'
-        self.assertIsNone(extract(html, url).get('price'))
-        self.assertIsNone(pure(html, url).get('price'))
-        self.assertIsNone(extruct(html, url).get('price'))
+        self.assertEqual(pure(html, url), {})
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extruct(html, url)
 
     def test_pure_partial_survives_extruct_failure(self):
         # Kazar's rendered page can make extruct fail even though pure Python
@@ -540,6 +582,8 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIsNone(_as_price(float('nan')))
         self.assertIsNone(_as_price(float('inf')))
         self.assertIsNone(_as_price(True))
+        self.assertIsNone(_as_price(['10', '20']))
+        self.assertIsNone(_as_price({'price': '10'}))
 
     def test_restock_normalizes_missing_currency_and_availability(self):
         from changedetectionio.processors.restock_diff import Restock
@@ -554,6 +598,8 @@ class TestRestockProductScope(unittest.TestCase):
 
         self.assertIsNone(Restock({'price': True, 'last_price': False}).get('price'))
         self.assertIsNone(Restock({'last_price': False}).get('last_price'))
+        for bad in ('--', '.', '-', '1.2.3'):
+            self.assertIsNone(Restock({'price': bad}).get('price'))
 
     def test_product_level_fields_without_offers(self):
         html = """<html><body>
@@ -613,6 +659,22 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIsNone(extract(html, url).get('currency'))
         self.assertIsNone(pure(html, url).get('currency'))
         self.assertIsNone(extruct(html, url).get('currency'))
+
+    def test_no_product_microdata_price_beats_opengraph(self):
+        html = """<html><head>
+        <meta property="og:price:amount" content="20" />
+        <meta property="og:price:currency" content="PLN" />
+        </head><body>
+        <div itemscope itemtype="http://schema.org/Offer">
+          <meta itemprop="price" content="10" />
+          <meta itemprop="priceCurrency" content="PLN" />
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
 
     def test_currency_comparison_is_case_insensitive(self):
         html = """<html><head>
@@ -764,10 +826,18 @@ class TestRestockProductScope(unittest.TestCase):
          "productGroupID": "MAIN123",
          "hasVariant": [{"@type": "Product", "sku": "MAIN123-1", "price": "null"}]}
         </script>""" + microdata + "</body></html>"
+        variant_specification = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Main Product",
+         "productGroupID": "MAIN123",
+         "hasVariant": [{"@type": "Product", "sku": "MAIN123-1",
+          "priceSpecification": {"@type": "PriceSpecification", "price": "null"}}]}
+        </script>""" + microdata + "</body></html>"
 
         url = 'https://shop.example/product/main-MAIN123.html'
         self.assertIsNone(extract(specification, url).get('price'))
         self.assertIsNone(extract(variant, url).get('price'))
+        self.assertIsNone(extract(variant_specification, url).get('price'))
 
     def test_microdata_price_fills_missing_jsonld_price_but_not_explicit_null(self):
         html = """<html><body>
@@ -794,6 +864,23 @@ class TestRestockProductScope(unittest.TestCase):
         explicit_null = html.replace(
             '"priceCurrency": "PLN"', '"price": "null", "priceCurrency": "PLN"', 1)
         self.assertIsNone(extract(explicit_null, url).get('price'))
+
+    def test_opengraph_price_fills_missing_jsonld_price(self):
+        html = """<html><head>
+        <meta property="og:price:amount" content="49.99" />
+        <meta property="og:price:currency" content="PLN" />
+        </head><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main Product",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "priceCurrency": "PLN",
+          "availability": "http://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertEqual(extract(html, url).get('price'), 49.99)
+        self.assertEqual(pure(html, url).get('price'), 49.99)
+        self.assertEqual(extruct(html, url).get('price'), 49.99)
 
     def test_combine_fills_currency_and_availability(self):
         from changedetectionio.processors.restock_diff import Restock

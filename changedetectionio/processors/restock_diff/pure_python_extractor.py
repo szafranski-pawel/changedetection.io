@@ -31,7 +31,7 @@ def _is_missing(value):
 
 def _as_price(value):
     import math
-    if _is_missing(value) or isinstance(value, bool):
+    if _is_missing(value) or isinstance(value, (bool, list, dict, tuple)):
         return None
     if isinstance(value, (int, float)):
         value = float(value)
@@ -160,20 +160,14 @@ def watch_url_product_keys(url):
     return tokens
 
 
-def _product_keys(product, url_matchable=False):
-    names = ('sku', 'productID', 'productGroupID', '@id', 'url')
-    variant_names = ('sku', 'productID')
-    if not url_matchable:
-        names += ('mpn', 'gtin13')
-        variant_names += ('mpn', 'gtin13')
-
+def _product_keys(product):
     keys = []
-    for name in names:
+    for name in ('sku', 'productID', 'productGroupID', 'mpn', 'gtin13', '@id', 'url'):
         keys.extend(_string_values(_ci_get(product, name)))
 
     for variant in _as_list(_ci_get(product, 'hasVariant')):
         if isinstance(variant, dict):
-            for name in variant_names:
+            for name in ('sku', 'productID', 'mpn', 'gtin13'):
                 keys.extend(_string_values(_ci_get(variant, name)))
     return keys
 
@@ -267,19 +261,7 @@ def _collect_product_candidates(jsonld_blocks):
 
     for block in jsonld_blocks:
         walk(block, False)
-
-    # Duplicate Product/ProductGroup blocks for the same URL are one product.
-    # Keep the first, matching the old flat extractor's document order.
-    unique = []
-    seen = set()
-    for product, top_level in candidates:
-        identity = _product_identity(product)
-        if top_level and all(identity):
-            if identity in seen:
-                continue
-            seen.add(identity)
-        unique.append((product, top_level))
-    return unique
+    return candidates
 
 
 def _flatten_offer(offer):
@@ -402,6 +384,23 @@ def product_offer_data(product):
     return result
 
 
+def _collapse_duplicate_products(top_level_products):
+    """Collapse identical product blocks after URL matching has had its say."""
+    if len(top_level_products) < 2:
+        return top_level_products
+
+    identities = [_product_identity(product) for product in top_level_products]
+    if any(identity != identities[0] for identity in identities):
+        return top_level_products
+    if all(identities[0]):
+        return [top_level_products[0]]
+
+    offer_data = [product_offer_data(product) for product in top_level_products]
+    if all(data == offer_data[0] for data in offer_data):
+        return [top_level_products[0]]
+    return top_level_products
+
+
 def select_main_product(jsonld_blocks, url=None):
     """Select the Product/ProductGroup that belongs to the watched URL."""
     candidates = _collect_product_candidates(jsonld_blocks or [])
@@ -422,11 +421,9 @@ def select_main_product(jsonld_blocks, url=None):
         return scored[0][3]
 
     top_level_products = [product for product, top_level in candidates if top_level]
+    top_level_products = _collapse_duplicate_products(top_level_products)
     if len(top_level_products) == 1:
-        product = top_level_products[0]
-        if not url_tokens or not any(
-                _has_significant_tokens(key) for key in _product_keys(product, url_matchable=True)):
-            return product
+        return top_level_products[0]
     return None
 
 
@@ -480,6 +477,19 @@ def select_microdata_product(items, url=None, jsonld_product=None):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _mapping_has_missing_price(mapping):
+    if not isinstance(mapping, dict):
+        return False
+    if _ci_has(mapping, 'price') and _is_missing(_ci_get(mapping, 'price')):
+        return True
+    for specification in _as_list(_ci_get(mapping, 'priceSpecification')):
+        specification = _unwrap_properties(specification)
+        if (_ci_has(specification, 'price')
+                and _is_missing(_ci_get(specification, 'price'))):
+            return True
+    return False
+
+
 def has_explicit_missing_price(product):
     """True when the product explicitly says price is missing, e.g. "null".
 
@@ -488,20 +498,15 @@ def has_explicit_missing_price(product):
     """
     if not isinstance(product, dict):
         return False
+    if _mapping_has_missing_price(product):
+        return True
     for offer in _iter_offers(product):
-        if _ci_has(offer, 'price') and _is_missing(_ci_get(offer, 'price')):
+        if _mapping_has_missing_price(offer):
             return True
-        for specification in _as_list(_ci_get(offer, 'priceSpecification')):
-            specification = _unwrap_properties(specification)
-            if (_ci_has(specification, 'price')
-                    and _is_missing(_ci_get(specification, 'price'))):
-                return True
     for variant in _as_list(_ci_get(product, 'hasVariant')):
-        if (isinstance(variant, dict)
-                and _ci_has(variant, 'price')
-                and _is_missing(_ci_get(variant, 'price'))):
+        if isinstance(variant, dict) and _mapping_has_missing_price(variant):
             return True
-    return _ci_has(product, 'price') and _is_missing(_ci_get(product, 'price'))
+    return False
 
 
 def microdata_product_data(item):
@@ -879,6 +884,11 @@ def _query_price_availability_scoped(extracted_data, url):
                 if result.get('availability') is None and len(availabilities) == 1:
                     result['availability'] = availabilities.pop()
 
+        if result.get('price') is None and not has_explicit_missing_price(main_product):
+            price = og_price(og_data)
+            if price is not None:
+                result['price'] = price
+
         # OpenGraph is page-level. Only use it when there is no ambiguous
         # microdata product; otherwise let the extruct path select by URL/name.
         if scopes == 0 or confirmed:
@@ -912,9 +922,10 @@ def _query_price_availability_scoped(extracted_data, url):
         price = _as_price(raw_price)
         if price is not None and price not in prices:
             prices.append(price)
-    og_price_value = og_price(og_data)
-    if og_price_value is not None and og_price_value not in prices:
-        prices.append(og_price_value)
+    if not prices:
+        og_price_value = og_price(og_data)
+        if og_price_value is not None:
+            prices.append(og_price_value)
 
     availabilities = []
     for raw_availability in microdata.get('availabilities', []):
