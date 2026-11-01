@@ -84,6 +84,48 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(pure(html, url).get('price'), 189.9)
         self.assertEqual(extruct(html, url).get('price'), 189.9)
 
+    def test_duplicate_product_blocks_use_first(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same Name",
+         "url": "https://shop.example/products/more-collagen",
+         "offers": {"@type": "Offer", "price": "99.99", "priceCurrency": "PLN",
+                    "availability": "http://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Same Name",
+         "url": "https://shop.example/products/more-collagen",
+         "hasVariant": [{"@type": "Product", "sku": "5906639913603",
+          "offers": {"@type": "Offer", "price": "84.99", "priceCurrency": "PLN",
+                     "availability": "http://schema.org/InStock"}}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/more-collagen'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 99.99)
+        self.assertEqual(value.get('availability'), 'instock')
+        self.assertEqual(pure(html, url).get('price'), 99.99)
+        self.assertEqual(extruct(html, url).get('price'), 99.99)
+
+    def test_id_fragment_does_not_block_url_fallback(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Main",
+         "url": "https://shop.example/products/foo-30",
+         "@id": "https://shop.example/products/foo-30#product",
+         "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
+                    "availability": "http://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/foo-30?variant=58522834239823'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertEqual(value.get('availability'), 'instock')
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
+
     def test_itemlist_recommendations_are_not_treated_as_top_level(self):
         html = """<html><body>
         <script type="application/ld+json">

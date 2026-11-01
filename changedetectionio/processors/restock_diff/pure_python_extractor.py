@@ -115,6 +115,10 @@ def _significant_tokens(value):
             if len(token) >= 3 and any(char.isdigit() for char in token)]
 
 
+def _has_significant_tokens(value):
+    return bool(_significant_tokens(str(value).split('#', 1)[0].split('?', 1)[0]))
+
+
 def watch_url_product_keys(url):
     """Return product-code-like tokens from the watch URL.
 
@@ -217,6 +221,13 @@ def _match_product_score(product, url_tokens):
     return _match_keys_score(_product_keys(product), url_tokens)
 
 
+def _product_identity(product):
+    name = _normalize_name(_ci_get(product, 'name'))
+    url = _ci_get(product, 'url') or _ci_get(product, '@id')
+    path = urlparse(str(url)).path.rstrip('/') if isinstance(url, str) else ''
+    return name, path
+
+
 def _collect_product_candidates(jsonld_blocks):
     """Return [(product, is_top_level), ...] from JSON-LD blocks."""
     candidates = []
@@ -256,7 +267,19 @@ def _collect_product_candidates(jsonld_blocks):
 
     for block in jsonld_blocks:
         walk(block, False)
-    return candidates
+
+    # Duplicate Product/ProductGroup blocks for the same URL are one product.
+    # Keep the first, matching the old flat extractor's document order.
+    unique = []
+    seen = set()
+    for product, top_level in candidates:
+        identity = _product_identity(product)
+        if top_level and all(identity):
+            if identity in seen:
+                continue
+            seen.add(identity)
+        unique.append((product, top_level))
+    return unique
 
 
 def _flatten_offer(offer):
@@ -402,7 +425,7 @@ def select_main_product(jsonld_blocks, url=None):
     if len(top_level_products) == 1:
         product = top_level_products[0]
         if not url_tokens or not any(
-                _significant_tokens(key) for key in _product_keys(product, url_matchable=True)):
+                _has_significant_tokens(key) for key in _product_keys(product, url_matchable=True)):
             return product
     return None
 
@@ -438,7 +461,7 @@ def select_microdata_product(items, url=None, jsonld_product=None):
         if not isinstance(jsonld_product, dict):
             if len(candidates) == 1:
                 keys = _microdata_item_keys(candidates[0])
-                if not any(_significant_tokens(key) for key in keys):
+                if not any(_has_significant_tokens(key) for key in keys):
                     return candidates[0]
             return None
 
@@ -880,7 +903,7 @@ def _query_price_availability_scoped(extracted_data, url):
         keys = list(microdata.get('product_keys', []))
         url_tokens = watch_url_product_keys(url)
         if (url_tokens
-                and any(_significant_tokens(key) for key in keys)
+                and any(_has_significant_tokens(key) for key in keys)
                 and not _match_keys_score(keys, url_tokens)):
             return {}
 
