@@ -84,6 +84,8 @@ class Restock(dict):
                     value = self.parse_currency(raw_value=value)
                 except (ValueError, ArithmeticError):
                     value = None
+                if value is not None and not math.isfinite(value):
+                    value = None
             elif isinstance(value, (int, float)) and not math.isfinite(float(value)):
                 value = None
         elif key in ('currency', 'availability') and isinstance(value, str):

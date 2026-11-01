@@ -886,6 +886,12 @@ def _query_price_availability_scoped(extracted_data, url):
                 if result.get('availability') is None and len(availabilities) == 1:
                     result['availability'] = availabilities.pop()
 
+        if result.get('price') is None and not has_explicit_missing_price(main_product) and scopes == 0:
+            prices = {_as_price(value) for value in microdata.get('prices', [])}
+            prices.discard(None)
+            if len(prices) == 1:
+                result['price'] = prices.pop()
+
         if result.get('price') is None and not has_explicit_missing_price(main_product):
             price = og_price(og_data)
             if price is not None:
@@ -909,6 +915,17 @@ def _query_price_availability_scoped(extracted_data, url):
     # one Product itemscope, so a carousel cannot masquerade as the main product.
     microdata = extracted_data.get('microdata', {}) or {}
     scopes = microdata.get('product_scopes', 0)
+    top_level_products = [product for product, top_level
+                          in _collect_product_candidates(extracted_data.get('json-ld', []))
+                          if top_level]
+    if len(top_level_products) > 1:
+        if any(has_explicit_missing_price(product) for product in top_level_products):
+            return {}
+        prices = {values.get('price')
+                  for values in (product_offer_data(product) for product in top_level_products)
+                  if values.get('price') is not None}
+        if len(prices) > 1:
+            return {}
     if scopes > 1:
         return {}
     if scopes == 1 and url:

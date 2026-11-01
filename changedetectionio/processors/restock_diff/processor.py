@@ -110,9 +110,11 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             prices = {data.get('price') for data in values if data.get('price') is not None}
             has_null_price = any(has_explicit_missing_price(product)
                                  for product in top_level_products)
-            if len(prices) > 1 and not has_null_price:
+            if has_null_price:
+                return Restock(), False
+            if len(prices) > 1:
                 raise MoreThanOnePriceFound()
-            if len(prices) == 1 and not has_null_price:
+            if len(prices) == 1:
                 for data in values:
                     if data.get('price') is not None:
                         result = dict(data)
@@ -138,6 +140,18 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                     and not has_explicit_missing_price(main_product)
                     and microdata_values.get('price') is not None):
                 result['price'] = microdata_values['price']
+
+        if result.get('price') is None and not has_explicit_missing_price(main_product):
+            offer_prices = set()
+            for item in data.get('microdata') or []:
+                if ('product' in microdata_item_types(item)
+                        or 'productgroup' in microdata_item_types(item)):
+                    continue
+                values = microdata_product_data(item)
+                if values.get('price') is not None:
+                    offer_prices.add(values['price'])
+            if len(offer_prices) == 1:
+                result['price'] = offer_prices.pop()
 
         if result.get('price') is None and not has_explicit_missing_price(main_product):
             price = og_price(og_data)

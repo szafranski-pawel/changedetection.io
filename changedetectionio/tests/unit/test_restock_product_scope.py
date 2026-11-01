@@ -146,7 +146,9 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(extruct(html, url).get('price'), 20.0)
 
     def test_multiple_unmatched_jsonld_products_raise(self):
-        html = """<html><body>
+        html = """<html><head>
+        <meta property="og:price:amount" content="15" />
+        </head><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "A",
          "sku": "AAA111", "offers": {"@type": "Offer", "price": "10"}}
@@ -230,7 +232,9 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(extruct(html, without_token_url).get('price'), 10.0)
 
     def test_null_main_with_priced_recommendation_does_not_guess(self):
-        html = """<html><body>
+        html = """<html><head>
+        <meta property="og:price:amount" content="15" />
+        </head><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "Main Product",
          "sku": "MAIN123", "offers": {"@type": "Offer", "price": "null"}}
@@ -636,6 +640,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIsNone(Restock({'last_price': False}).get('last_price'))
         for bad in ('--', '.', '-', '1.2.3'):
             self.assertIsNone(Restock({'price': bad}).get('price'))
+        self.assertIsNone(Restock({'price': '9' * 400}).get('price'))
         for bad in (float('nan'), float('inf'), [10], {'price': 10}):
             self.assertIsNone(Restock({'price': bad}).get('price'))
         for bad in ('--', '1.2.3'):
@@ -926,6 +931,23 @@ class TestRestockProductScope(unittest.TestCase):
             '"priceCurrency": "PLN"', '"price": "null", "priceCurrency": "PLN"', 1)
         self.assertIsNone(extract(explicit_null, url).get('price'))
         self.assertIsNone(pure(explicit_null, url).get('price'))
+
+    def test_bare_offer_microdata_fills_missing_jsonld_price(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main Product",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "priceCurrency": "PLN",
+          "availability": "http://schema.org/InStock"}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Offer">
+          <meta itemprop="price" content="42" />
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertEqual(extract(html, url).get('price'), 42.0)
+        self.assertEqual(pure(html, url).get('price'), 42.0)
+        self.assertEqual(extruct(html, url).get('price'), 42.0)
 
     def test_combine_fills_currency_and_availability(self):
         from changedetectionio.processors.restock_diff import Restock
