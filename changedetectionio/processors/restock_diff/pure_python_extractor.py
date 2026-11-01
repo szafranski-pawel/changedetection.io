@@ -62,6 +62,13 @@ def _ci_get(obj, name):
     return None
 
 
+def _ci_has(obj, name):
+    if not isinstance(obj, dict):
+        return False
+    wanted = name.casefold()
+    return any(isinstance(key, str) and key.casefold() == wanted for key in obj)
+
+
 def _type_name(value):
     return str(value).strip().casefold().rsplit('/', 1)[-1]
 
@@ -102,6 +109,8 @@ def _key_tokens(value):
 def _significant_tokens(value):
     # Product identifiers in URLs virtually always contain a digit. This avoids
     # matching generic words such as "product", "body" or "black".
+    # shortcut: alphabetic-only SKUs are not matched; widen this with a
+    # false-positive test when such a shop is supported.
     return [token for token in _key_tokens(value)
             if len(token) >= 3 and any(char.isdigit() for char in token)]
 
@@ -124,17 +133,11 @@ def watch_url_product_keys(url):
 
     for key, values in parse_qs(parsed.query).items():
         key_lower = key.casefold()
-        key_parts = set(re.split(r'[^a-z0-9]+', key_lower))
         if key_lower in ('pid', 'productid', 'product_id', 'sku'):
             for value in values:
                 add(value)
         elif key_lower.startswith('dwvar_'):
             add(key[len('dwvar_'):].split('_')[0])
-            for value in values:
-                add(value)
-        elif key_parts & {'col', 'color', 'colour', 'size', 'sizes', 'taglia', 'taglie'}:
-            for value in values:
-                add(value)
 
     path_slug = unquote(parsed.path.rsplit('/', 1)[-1])
     path_slug = re.sub(r'\.(?:html?|php|aspx?)$', '', path_slug, flags=re.IGNORECASE)
@@ -167,6 +170,15 @@ def _string_values(value):
     values = value if isinstance(value, list) else [value]
     return [str(entry) for entry in values
             if isinstance(entry, (str, int, float)) and not isinstance(entry, bool)]
+
+
+def _microdata_item_keys(item):
+    properties = item.get('properties') or {}
+    keys = []
+    for value in (item.get('id'), properties.get('sku'),
+                  properties.get('productID'), properties.get('url')):
+        keys.extend(_string_values(value))
+    return keys
 
 
 def _match_keys_score(keys, url_tokens):
@@ -408,17 +420,19 @@ def select_microdata_product(items, url=None, jsonld_product=None):
     if url_tokens:
         scored = []
         for index, item in enumerate(candidates):
-            properties = item.get('properties') or {}
-            keys = []
-            for value in (item.get('id'), properties.get('sku'),
-                          properties.get('productID'), properties.get('url')):
-                keys.extend(_string_values(value))
-            score = _match_keys_score(keys, url_tokens)
+            score = _match_keys_score(_microdata_item_keys(item), url_tokens)
             if score:
                 scored.append((score, -index, item))
         if scored:
             scored.sort(key=lambda entry: (entry[0], entry[1]), reverse=True)
             return scored[0][2]
+
+        if not isinstance(jsonld_product, dict):
+            if len(candidates) == 1:
+                keys = _microdata_item_keys(candidates[0])
+                if not any(_significant_tokens(key) for key in keys):
+                    return candidates[0]
+            return None
 
     # A unique name match can supply availability when the JSON-LD omits it.
     # Duplicate or missing name matches are carousel tiles and must stay
@@ -433,6 +447,20 @@ def select_microdata_product(items, url=None, jsonld_product=None):
         return None
 
     return candidates[0] if len(candidates) == 1 else None
+
+
+def has_explicit_missing_price(product):
+    """True when the product explicitly says price is missing, e.g. "null".
+
+    A missing price key is not the same: some shops omit offers.price but still
+    publish the price in microdata.
+    """
+    if not isinstance(product, dict):
+        return False
+    for offer in _iter_offers(product):
+        if _ci_has(offer, 'price') and _is_missing(_ci_get(offer, 'price')):
+            return True
+    return _ci_has(product, 'price') and _is_missing(_ci_get(product, 'price'))
 
 
 def microdata_product_data(item):
@@ -576,6 +604,8 @@ class MicrodataExtractor(HTMLParser):
             'currencies': [],
             'availabilities': [],
             'product_scopes': 0,
+            'product_ids': [],
+            'product_skus': [],
         }
         self.current_itemprop = None
 
@@ -586,6 +616,9 @@ class MicrodataExtractor(HTMLParser):
             itemtype = (attrs_dict.get('itemtype') or '').casefold()
             if 'product' in itemtype:
                 self.microdata['product_scopes'] += 1
+                itemid = attrs_dict.get('itemid')
+                if itemid:
+                    self.microdata['product_ids'].append(itemid)
 
         if 'itemprop' in attrs_dict:
             itemprop = attrs_dict['itemprop']
@@ -597,6 +630,12 @@ class MicrodataExtractor(HTMLParser):
                     self.microdata['prices'].append(attrs_dict['content'])
                 else:
                     self.current_itemprop = 'price'
+
+            elif itemprop == 'sku':
+                if 'content' in attrs_dict:
+                    self.microdata['product_skus'].append(attrs_dict['content'])
+                else:
+                    self.current_itemprop = 'sku'
 
             elif itemprop == 'priceCurrency':
                 if 'content' in attrs_dict:
@@ -633,6 +672,10 @@ class MicrodataExtractor(HTMLParser):
             if currency:
                 self.microdata['currency'] = currency
                 self.microdata['currencies'].append(currency)
+        elif self.current_itemprop == 'sku':
+            sku = data.strip()
+            if sku:
+                self.microdata['product_skus'].append(sku)
         elif self.current_itemprop == 'availability':
             availability = data.strip()
             if availability:
@@ -776,22 +819,52 @@ def _query_price_availability_scoped(extracted_data, url):
 
     if main_product:
         result = product_offer_data(main_product)
-        if result.get('currency') is None:
-            currency = og_currency(og_data)
-            if currency:
-                result['currency'] = currency
-        if result.get('availability') is None:
-            availability = og_availability(og_data)
-            if availability:
-                result['availability'] = availability
+        microdata = extracted_data.get('microdata', {}) or {}
+        scopes = microdata.get('product_scopes', 0)
+        confirmed = False
+        if scopes == 1:
+            keys = list(microdata.get('product_ids', [])) + list(microdata.get('product_skus', []))
+            url_tokens = watch_url_product_keys(url)
+            confirmed = bool(url_tokens) and _match_keys_score(keys, url_tokens) > 0
+            if confirmed:
+                currencies = {str(value).strip().upper()
+                              for value in microdata.get('currencies', [])
+                              if not _is_missing(value)}
+                if result.get('currency') is None and len(currencies) == 1:
+                    result['currency'] = currencies.pop()
+                availabilities = {normalize_availability(value)
+                                  for value in microdata.get('availabilities', [])}
+                availabilities.discard(None)
+                if result.get('availability') is None and len(availabilities) == 1:
+                    result['availability'] = availabilities.pop()
+
+        # OpenGraph is page-level. Only use it when there is no ambiguous
+        # microdata product; otherwise let the extruct path select by URL/name.
+        if scopes == 0 or confirmed:
+            if result.get('currency') is None:
+                currency = og_currency(og_data)
+                if currency:
+                    result['currency'] = currency
+            if result.get('availability') is None:
+                availability = og_availability(og_data)
+                if availability:
+                    result['availability'] = availability
         return result
 
     # No Product/ProductGroup JSON-LD (Kazar-style page). Keep the legacy
     # single-unique-price fallback, but refuse when the page contains more than
     # one Product itemscope, so a carousel cannot masquerade as the main product.
     microdata = extracted_data.get('microdata', {}) or {}
-    if microdata.get('product_scopes', 0) > 1:
+    scopes = microdata.get('product_scopes', 0)
+    if scopes > 1:
         return {}
+    if scopes == 1 and url:
+        keys = list(microdata.get('product_ids', [])) + list(microdata.get('product_skus', []))
+        url_tokens = watch_url_product_keys(url)
+        if (url_tokens
+                and any(_significant_tokens(key) for key in keys)
+                and not _match_keys_score(keys, url_tokens)):
+            return {}
 
     prices = []
     for raw_price in microdata.get('prices', []):

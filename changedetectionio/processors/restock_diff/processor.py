@@ -83,6 +83,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     extraction engine.
     """
     from .pure_python_extractor import (
+        has_explicit_missing_price,
         microdata_item_types,
         microdata_product_data,
         og_availability,
@@ -98,6 +99,21 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
 
     if main_product:
         result = product_offer_data(main_product)
+
+        # Microdata is product-specific, so it wins over page-level OpenGraph.
+        # Never take a microdata price when the JSON-LD explicitly says null.
+        microdata_item = select_microdata_product(
+            data.get('microdata', []), url=url, jsonld_product=main_product)
+        if microdata_item:
+            microdata_values = microdata_product_data(microdata_item)
+            for field in ('currency', 'availability'):
+                if result.get(field) is None and microdata_values.get(field) is not None:
+                    result[field] = microdata_values[field]
+            if (result.get('price') is None
+                    and not has_explicit_missing_price(main_product)
+                    and microdata_values.get('price') is not None):
+                result['price'] = microdata_values['price']
+
         if result.get('currency') is None:
             currency = og_currency(og_data)
             if currency:
@@ -107,28 +123,21 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             if availability:
                 result['availability'] = availability
 
-        # Microdata can confirm fields the JSON-LD omits, but never its price:
-        # a null-priced main product must stay unavailable.
-        microdata_item = select_microdata_product(
-            data.get('microdata', []), url=url, jsonld_product=main_product)
-        if microdata_item:
-            microdata_values = microdata_product_data(microdata_item)
-            for field in ('currency', 'availability'):
-                if result.get(field) is None and microdata_values.get(field) is not None:
-                    result[field] = microdata_values[field]
-
         return Restock(result), True
 
-    # No Product/ProductGroup JSON-LD. If the page has several Product
-    # itemscopes, it is a multi-product page and we must not guess.
+    # No Product/ProductGroup JSON-LD. Match an itemscope to the watched URL
+    # before falling back to a single product; several unmatched products are
+    # still ambiguous.
     product_items = [item for item in (data.get('microdata') or [])
                      if 'product' in microdata_item_types(item)
                      or 'productgroup' in microdata_item_types(item)]
-    if len(product_items) > 1:
-        raise MoreThanOnePriceFound()
-
-    if len(product_items) == 1:
-        result = microdata_product_data(product_items[0])
+    microdata_item = select_microdata_product(product_items, url=url)
+    if microdata_item:
+        result = microdata_product_data(microdata_item)
+    elif product_items:
+        if len(product_items) > 1:
+            raise MoreThanOnePriceFound()
+        return Restock(), False
     else:
         # No Product scope at all. Accept only a single unique price from
         # offer-like microdata or the page-level OpenGraph tags.
