@@ -84,6 +84,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     """
     from .pure_python_extractor import (
         _collect_product_candidates,
+        _match_product_score,
         has_explicit_missing_price,
         microdata_item_types,
         microdata_product_data,
@@ -93,6 +94,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         product_offer_data,
         select_main_product,
         select_microdata_product,
+        watch_url_product_keys,
     )
 
     og_data = _extruct_og_flat(data)
@@ -126,6 +128,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
 
     if main_product:
         result = product_offer_data(main_product)
+        url_tokens = watch_url_product_keys(url)
+        main_url_matched = bool(url_tokens) and _match_product_score(main_product, url_tokens) > 0
 
         # Microdata is product-specific, so it wins over page-level OpenGraph.
         # Never take a microdata price when the JSON-LD explicitly says null.
@@ -159,8 +163,9 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                 result['price'] = price
 
         # OpenGraph is page-level. If microdata has products but none was
-        # matched, it is ambiguous and OG must not guess for it.
-        if not product_items or microdata_item:
+        # matched, it is ambiguous and OG must not guess for it. A URL-matched
+        # main product is not ambiguous, so it can still use OG.
+        if not product_items or microdata_item or main_url_matched:
             if result.get('currency') is None:
                 currency = og_currency(og_data)
                 if currency:

@@ -46,9 +46,10 @@ class Restock(dict):
             # Convert to float
             # @todo locale needs to be the locale of the webpage
             try:
-                return float(parse_decimal(standardized_value, locale='en'))
+                value = float(parse_decimal(standardized_value, locale='en'))
             except (ValueError, ArithmeticError):
                 return None
+            return value if math.isfinite(value) else None
 
         return None
 
@@ -80,12 +81,7 @@ class Restock(dict):
             if isinstance(value, (bool, list, dict, tuple, set, frozenset)):
                 value = None
             elif isinstance(value, str):
-                try:
-                    value = self.parse_currency(raw_value=value)
-                except (ValueError, ArithmeticError):
-                    value = None
-                if value is not None and not math.isfinite(value):
-                    value = None
+                value = self.parse_currency(raw_value=value)
             elif isinstance(value, (int, float)) and not math.isfinite(float(value)):
                 value = None
         elif key in ('currency', 'availability') and isinstance(value, str):
