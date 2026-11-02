@@ -84,10 +84,13 @@ class Restock(dict):
                 value = self.parse_currency(raw_value=value)
             elif isinstance(value, (int, float)) and not math.isfinite(float(value)):
                 value = None
-        elif key in ('currency', 'availability') and isinstance(value, str):
-            # Some sites (and our old extractor) emit the literal string "null".
-            if value.strip().lower() in MISSING_STRINGS:
+        elif key in ('currency', 'availability'):
+            if isinstance(value, (bool, list, dict, tuple, set, frozenset)):
                 value = None
+            elif isinstance(value, str):
+                # Some sites (and our old extractor) emit the literal string "null".
+                if value.strip().lower() in MISSING_STRINGS:
+                    value = None
 
         super().__setitem__(key, value)
 

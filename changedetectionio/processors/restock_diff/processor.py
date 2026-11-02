@@ -85,6 +85,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     from .pure_python_extractor import (
         _collect_product_candidates,
         _match_product_score,
+        fill_missing_from_og,
+        has_conflicting_microdata_prices,
         has_explicit_missing_price,
         microdata_item_types,
         microdata_product_data,
@@ -94,6 +96,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         product_offer_data,
         select_main_product,
         select_microdata_product,
+        top_level_offers,
+        top_level_product_consensus,
         watch_url_product_keys,
     )
 
@@ -101,30 +105,19 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     product_items = [item for item in (data.get('microdata') or [])
                      if 'product' in microdata_item_types(item)
                      or 'productgroup' in microdata_item_types(item)]
+    top_level_products = [product for product, top_level
+                          in _collect_product_candidates(data.get('json-ld', []))
+                          if top_level]
     main_product = select_main_product(data.get('json-ld', []), url=url)
 
-    if not main_product:
-        top_level_products = [product for product, top_level
-                              in _collect_product_candidates(data.get('json-ld', []))
-                              if top_level]
-        if len(top_level_products) > 1:
-            values = [product_offer_data(product) for product in top_level_products]
-            prices = {data.get('price') for data in values if data.get('price') is not None}
-            has_null_price = any(has_explicit_missing_price(product)
-                                 for product in top_level_products)
-            if has_null_price:
-                return Restock(), False
-            if len(prices) > 1:
-                raise MoreThanOnePriceFound()
-            if len(prices) == 1:
-                for data in values:
-                    if data.get('price') is not None:
-                        result = dict(data)
-                        for other in values:
-                            for field in ('currency', 'availability'):
-                                if result.get(field) is None and other.get(field) is not None:
-                                    result[field] = other[field]
-                        return Restock(result), False
+    if not main_product and len(top_level_products) > 1:
+        consensus, conflict = top_level_product_consensus(top_level_products)
+        if conflict:
+            raise MoreThanOnePriceFound()
+        if consensus:
+            return Restock(consensus), False
+        if any(has_explicit_missing_price(product) for product in top_level_products):
+            return Restock(), False
 
     if main_product:
         result = product_offer_data(main_product)
@@ -145,12 +138,11 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                     and microdata_values.get('price') is not None):
                 result['price'] = microdata_values['price']
 
-        if result.get('price') is None and not has_explicit_missing_price(main_product):
+        if (result.get('price') is None
+                and not product_items
+                and not has_explicit_missing_price(main_product)):
             offer_prices = set()
             for item in data.get('microdata') or []:
-                if ('product' in microdata_item_types(item)
-                        or 'productgroup' in microdata_item_types(item)):
-                    continue
                 values = microdata_product_data(item)
                 if values.get('price') is not None:
                     offer_prices.add(values['price'])
@@ -180,8 +172,15 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     # No Product/ProductGroup JSON-LD. Match an itemscope to the watched URL
     # before falling back to a single product; several unmatched products are
     # still ambiguous.
+    if not product_items and not top_level_products:
+        offers = top_level_offers(data.get('json-ld', []))
+        if len(offers) == 1:
+            return Restock(fill_missing_from_og(product_offer_data(offers[0]), og_data)), False
+
     microdata_item = select_microdata_product(product_items, url=url)
     if microdata_item:
+        if has_conflicting_microdata_prices(microdata_item):
+            raise MoreThanOnePriceFound()
         result = microdata_product_data(microdata_item)
     elif product_items:
         if len(product_items) > 1:
@@ -466,9 +465,11 @@ def extract_itemprop_availability_safe(html_content, url=None) -> Restock:
 
         logger.trace("Attempting pure Python metadata extraction (no lxml)")
         extracted_data = extract_metadata_pure_python(html_content)
-        price_data = query_price_availability(extracted_data, url=url)
+        main_product = select_main_product(extracted_data.get('json-ld', []), url=url) if url else None
+        price_data = query_price_availability(
+            extracted_data, url=url, main_product=main_product)
         pure_price_data = price_data or {}
-        pure_had_main = bool(url) and select_main_product(extracted_data.get('json-ld', []), url=url) is not None
+        pure_had_main = bool(url) and main_product is not None
 
         # If we got price AND availability, we're done! price=0 is valid.
         if price_data.get('price') is not None and price_data.get('availability') is not None:
