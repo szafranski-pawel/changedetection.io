@@ -170,19 +170,11 @@ def watch_url_product_keys(url):
 
     path = parsed.path.rstrip('/')
     segments = [unquote(segment) for segment in path.split('/') if segment]
-    if segments:
-        path_slug = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[-1], flags=re.IGNORECASE)
+    for segment in segments:
+        path_slug = re.sub(r'\.(?:html?|php|aspx?)$', '', segment, flags=re.IGNORECASE)
         add(path_slug)
         for part in re.split(r'-', path_slug):
             add(part)
-
-        # URLs such as /product/ABC123/reviews keep the code before the last
-        # segment. Only fall back when the last segment has no product code.
-        if not tokens and len(segments) > 1:
-            previous = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[-2], flags=re.IGNORECASE)
-            add(previous)
-            for part in re.split(r'-', previous):
-                add(part)
 
     if not tokens:
         tokens.update(fallback_tokens)
@@ -405,16 +397,16 @@ def _offer_availability(offer):
     return _single_availability(_ci_get(offer, 'availability'))
 
 
-def _consensus(values):
+def _consensus(values, first_wins=False):
     unique = []
     for value in values:
         if value is not None and value not in unique:
             unique.append(value)
     if len(unique) == 1:
         return unique[0]
-    # Preserve the old first-non-null behavior inside the selected product.
-    # Product/carousel selection happens before this point.
-    return next((value for value in values if value is not None), None)
+    if first_wins:
+        return next((value for value in values if value is not None), None)
+    return None
 
 
 def product_offer_data(product):
@@ -455,16 +447,35 @@ def product_offer_data(product):
             availabilities.append(availability)
 
     result = {}
-    price = _consensus(prices)
+    first_wins = ('productgroup' in _jsonld_types(product)
+                  or bool(_as_list(_ci_get(product, 'hasVariant'))))
+    price = _consensus(prices, first_wins=first_wins)
     if price is not None:
         result['price'] = price
-    currency = _consensus([value.casefold() for value in currencies])
+    currency = _consensus([value.casefold() for value in currencies], first_wins=first_wins)
     if currency is not None:
         result['currency'] = currency.upper()
-    availability = _consensus(availabilities)
+    availability = _consensus(availabilities, first_wins=first_wins)
     if availability is not None:
         result['availability'] = availability
     return result
+
+
+def has_conflicting_product_prices(product):
+    if not isinstance(product, dict):
+        return False
+    if ('productgroup' in _jsonld_types(product)
+            or _as_list(_ci_get(product, 'hasVariant'))):
+        return False
+    prices = set()
+    for offer in _iter_offers(product):
+        price = _offer_price(offer)
+        if price is not None:
+            prices.add(price)
+    price = _as_price(_ci_get(product, 'price'))
+    if price is not None:
+        prices.add(price)
+    return len(prices) > 1
 
 
 def _collapse_duplicate_products(top_level_products):
@@ -476,7 +487,12 @@ def _collapse_duplicate_products(top_level_products):
     if any(identity != identities[0] for identity in identities):
         return top_level_products
     if all(identities[0]):
-        return [top_level_products[0]]
+        offer_data = [product_offer_data(product) for product in top_level_products]
+        has_group = any('productgroup' in _jsonld_types(product)
+                        for product in top_level_products)
+        if all(data == offer_data[0] for data in offer_data) or has_group:
+            return [top_level_products[0]]
+        return top_level_products
 
     offer_data = [product_offer_data(product) for product in top_level_products]
     if all(data == offer_data[0] for data in offer_data):
@@ -1068,14 +1084,13 @@ def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
             if len(prices) == 1 and (scopes == 0 or confirmed):
                 result['price'] = prices.pop()
 
-        if result.get('price') is None and not has_explicit_missing_price(main_product):
-            price = og_price(og_data)
-            if price is not None:
-                result['price'] = price
-
         # OpenGraph is page-level. Only use it when there is no ambiguous
         # microdata product; otherwise let the extruct path select by URL/name.
         if scopes == 0 or confirmed or main_url_matched:
+            if result.get('price') is None and not has_explicit_missing_price(main_product):
+                price = og_price(og_data)
+                if price is not None:
+                    result['price'] = price
             if result.get('currency') is None:
                 currency = og_currency(og_data)
                 if currency:
@@ -1105,6 +1120,13 @@ def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
 
     if scopes == 0:
         offers = top_level_offers(extracted_data.get('json-ld', []))
+        if len(offers) > 1:
+            values = [product_offer_data(offer) for offer in offers]
+            prices = {data.get('price') for data in values if data.get('price') is not None}
+            if len(prices) > 1:
+                return {}
+            if len(prices) == 1:
+                return fill_missing_from_og(values[0], og_data)
         if len(offers) == 1:
             return fill_missing_from_og(product_offer_data(offers[0]), og_data)
 

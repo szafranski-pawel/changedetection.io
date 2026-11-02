@@ -363,6 +363,7 @@ class TestRestockProductScope(unittest.TestCase):
 
         self.assertIn('abc123', watch_url_product_keys('https://shop.example/product/abc123/'))
         self.assertIn('abc123', watch_url_product_keys('https://shop.example/product/abc123/reviews'))
+        self.assertIn('abc123', watch_url_product_keys('https://shop.example/p/abc123/page2'))
 
     def test_variant_id_selects_product_when_path_has_no_code(self):
         html = """<html><body>
@@ -703,6 +704,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIsNone(_safe_float('nan'))
         self.assertIsNone(_safe_float('inf'))
         self.assertIsNone(_safe_float(True))
+        self.assertEqual(_safe_float('1.299,00'), 1299.0)
         self.assertEqual(_as_price('12.5'), 12.5)
         self.assertIsNone(_as_price(float('nan')))
         self.assertIsNone(_as_price(float('inf')))
@@ -1117,6 +1119,72 @@ class TestRestockProductScope(unittest.TestCase):
             extract(html, url)
         with self.assertRaises(restock_diff.MoreThanOnePriceFound):
             extruct(html, url)
+
+    def test_conflicting_microdata_on_matched_main_raises(self):
+        html = """<html><head>
+        <meta property="og:price:amount" content="15" />
+        </head><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "priceCurrency": "PLN"}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/product/main-MAIN123.html">
+          <span itemprop="name">Main</span>
+          <meta itemprop="price" content="10" />
+          <meta itemprop="price" content="20" />
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
+
+    def test_single_product_multi_offer_conflict_raises(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "sku": "MAIN123", "offers": [
+          {"@type": "Offer", "price": "10", "priceCurrency": "PLN"},
+          {"@type": "Offer", "price": "20", "priceCurrency": "PLN"}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
+
+    def test_two_bare_offers_conflict_raise(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Offer", "price": "10"}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Offer", "price": "20"}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/foo'
+        self.assertEqual(pure(html, url), {})
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
+
+    def test_same_identity_products_with_different_prices_raise(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/same", "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/same", "offers": {"@type": "Offer", "price": "99"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/same'
+        self.assertEqual(pure(html, url), {})
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
 
     def test_bare_offer_microdata_fills_missing_jsonld_price(self):
         html = """<html><body>

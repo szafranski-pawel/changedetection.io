@@ -87,6 +87,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         _match_product_score,
         fill_missing_from_og,
         has_conflicting_microdata_prices,
+        has_conflicting_product_prices,
         has_explicit_missing_price,
         microdata_item_types,
         microdata_product_data,
@@ -120,6 +121,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             return Restock(), False
 
     if main_product:
+        if has_conflicting_product_prices(main_product):
+            raise MoreThanOnePriceFound()
         result = product_offer_data(main_product)
         url_tokens = watch_url_product_keys(url)
         main_url_matched = bool(url_tokens) and _match_product_score(main_product, url_tokens) > 0
@@ -129,6 +132,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         microdata_item = select_microdata_product(
             product_items, url=url, jsonld_product=main_product)
         if microdata_item:
+            if has_conflicting_microdata_prices(microdata_item):
+                raise MoreThanOnePriceFound()
             microdata_values = microdata_product_data(microdata_item)
             for field in ('currency', 'availability'):
                 if result.get(field) is None and microdata_values.get(field) is not None:
@@ -149,15 +154,14 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             if len(offer_prices) == 1:
                 result['price'] = offer_prices.pop()
 
-        if result.get('price') is None and not has_explicit_missing_price(main_product):
-            price = og_price(og_data)
-            if price is not None:
-                result['price'] = price
-
         # OpenGraph is page-level. If microdata has products but none was
         # matched, it is ambiguous and OG must not guess for it. A URL-matched
         # main product is not ambiguous, so it can still use OG.
         if not product_items or microdata_item or main_url_matched:
+            if result.get('price') is None and not has_explicit_missing_price(main_product):
+                price = og_price(og_data)
+                if price is not None:
+                    result['price'] = price
             if result.get('currency') is None:
                 currency = og_currency(og_data)
                 if currency:
@@ -174,6 +178,13 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     # still ambiguous.
     if not product_items and not top_level_products:
         offers = top_level_offers(data.get('json-ld', []))
+        if len(offers) > 1:
+            values = [product_offer_data(offer) for offer in offers]
+            prices = {data.get('price') for data in values if data.get('price') is not None}
+            if len(prices) > 1:
+                raise MoreThanOnePriceFound()
+            if len(prices) == 1:
+                return Restock(fill_missing_from_og(values[0], og_data)), False
         if len(offers) == 1:
             return Restock(fill_missing_from_og(product_offer_data(offers[0]), og_data)), False
 
@@ -239,14 +250,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
 
 
 def _safe_float(value):
-    import math
-    if isinstance(value, bool):
-        return None
-    try:
-        result = float(value)
-    except (TypeError, ValueError):
-        return None
-    return result if math.isfinite(result) else None
+    from .pure_python_extractor import _as_price
+    return _as_price(value)
 
 
 def _combine_with_pure_partial(pure_data, fetched, scoped,
