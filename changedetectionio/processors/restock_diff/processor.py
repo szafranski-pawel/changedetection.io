@@ -1,6 +1,7 @@
 from ..base import difference_detection_processor
 from ..exceptions import ProcessorException
 from . import Restock
+from .pure_python_extractor import _as_price, _fill_missing
 from loguru import logger
 from changedetectionio.content_fetchers.exceptions import checksumFromPreviousCheckWasTheSame
 
@@ -93,6 +94,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         microdata_product_data,
         og_availability,
         og_currency,
+        og_currency_for_price,
         og_price,
         product_offer_data,
         select_main_product,
@@ -106,46 +108,33 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     product_items = [item for item in (data.get('microdata') or [])
                      if 'product' in microdata_item_types(item)
                      or 'productgroup' in microdata_item_types(item)]
-    top_level_products = [product for product, top_level
-                          in _collect_product_candidates(data.get('json-ld', []))
-                          if top_level]
     main_product = select_main_product(data.get('json-ld', []), url=url)
-
-    if not main_product and len(top_level_products) > 1:
-        consensus, conflict = top_level_product_consensus(top_level_products)
-        if conflict:
-            raise MoreThanOnePriceFound()
-        if consensus:
-            return Restock(consensus), False
-        if any(has_explicit_missing_price(product) for product in top_level_products):
-            return Restock(), False
 
     if main_product:
         if has_conflicting_product_prices(main_product):
             raise MoreThanOnePriceFound()
         result = product_offer_data(main_product)
-        url_tokens = watch_url_product_keys(url)
+        explicit_missing = has_explicit_missing_price(main_product)
+        url_tokens = watch_url_product_keys(url, include_variant=True)
         main_url_matched = bool(url_tokens) and _match_product_score(main_product, url_tokens) > 0
 
         # Microdata is product-specific, so it wins over page-level OpenGraph.
-        # Never take a microdata price when the JSON-LD explicitly says null.
+        # A conflicting secondary source must not abort a main product that
+        # already has its own price; just ignore that source.
         microdata_item = select_microdata_product(
             product_items, url=url, jsonld_product=main_product)
-        if microdata_item:
-            if has_conflicting_microdata_prices(microdata_item):
+        if microdata_item and has_conflicting_microdata_prices(microdata_item):
+            if result.get('price') is None:
                 raise MoreThanOnePriceFound()
+            microdata_item = None
+        if microdata_item:
             microdata_values = microdata_product_data(microdata_item)
-            for field in ('currency', 'availability'):
-                if result.get(field) is None and microdata_values.get(field) is not None:
-                    result[field] = microdata_values[field]
-            if (result.get('price') is None
-                    and not has_explicit_missing_price(main_product)
+            _fill_missing(result, microdata_values, ('currency', 'availability'))
+            if (result.get('price') is None and not explicit_missing
                     and microdata_values.get('price') is not None):
                 result['price'] = microdata_values['price']
 
-        if (result.get('price') is None
-                and not product_items
-                and not has_explicit_missing_price(main_product)):
+        if result.get('price') is None and not product_items and not explicit_missing:
             offer_prices = set()
             for item in data.get('microdata') or []:
                 values = microdata_product_data(item)
@@ -158,35 +147,46 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         # matched, it is ambiguous and OG must not guess for it. A URL-matched
         # main product is not ambiguous, so it can still use OG.
         if not product_items or microdata_item or main_url_matched:
-            if result.get('price') is None and not has_explicit_missing_price(main_product):
+            fill_missing_from_og(result, og_data, fill_price=not explicit_missing)
+        elif result.get('price') is None and not explicit_missing:
+            microdata_prices = {value for item in product_items
+                                if (value := microdata_product_data(item).get('price')) is not None}
+            if not microdata_prices:
                 price = og_price(og_data)
                 if price is not None:
                     result['price'] = price
-            if result.get('currency') is None:
-                currency = og_currency(og_data)
-                if currency:
-                    result['currency'] = currency
-            if result.get('availability') is None:
-                availability = og_availability(og_data)
-                if availability:
-                    result['availability'] = availability
 
         return Restock(result), True
 
     # No Product/ProductGroup JSON-LD. Match an itemscope to the watched URL
     # before falling back to a single product; several unmatched products are
     # still ambiguous.
+    top_level_products = [product for product, top_level
+                          in _collect_product_candidates(data.get('json-ld', []))
+                          if top_level]
+    if len(top_level_products) > 1:
+        consensus, conflict = top_level_product_consensus(top_level_products)
+        if conflict:
+            raise MoreThanOnePriceFound()
+        if consensus:
+            return Restock(consensus), False
+        if any(has_explicit_missing_price(product) for product in top_level_products):
+            return Restock(), False
+
     if not product_items and not top_level_products:
         offers = top_level_offers(data.get('json-ld', []))
         if len(offers) > 1:
-            values = [product_offer_data(offer) for offer in offers]
-            prices = {data.get('price') for data in values if data.get('price') is not None}
-            if len(prices) > 1:
+            consensus, conflict = top_level_product_consensus(offers, offers_mode=True)
+            if conflict:
                 raise MoreThanOnePriceFound()
-            if len(prices) == 1:
-                return Restock(fill_missing_from_og(values[0], og_data)), False
+            if consensus:
+                explicit = any(has_explicit_missing_price(offer) for offer in offers)
+                return Restock(fill_missing_from_og(
+                    consensus, og_data, fill_price=not explicit)), False
         if len(offers) == 1:
-            return Restock(fill_missing_from_og(product_offer_data(offers[0]), og_data)), False
+            return Restock(fill_missing_from_og(
+                product_offer_data(offers[0]), og_data,
+                fill_price=not has_explicit_missing_price(offers[0]))), False
 
     microdata_item = select_microdata_product(product_items, url=url)
     if microdata_item:
@@ -200,58 +200,44 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     else:
         # No Product scope at all. Accept only a single unique price from
         # offer-like microdata or the page-level OpenGraph tags.
-        prices = []
-        availabilities = []
-        currencies = []
+        prices = set()
+        availabilities = set()
+        currencies = set()
         for item in data.get('microdata') or []:
             values = microdata_product_data(item)
-            if values.get('price') is not None and values['price'] not in prices:
-                prices.append(values['price'])
-            if values.get('availability') and values['availability'] not in availabilities:
-                availabilities.append(values['availability'])
-            if values.get('currency') and values['currency'] not in currencies:
-                currencies.append(str(values['currency']).strip().upper())
+            if values.get('price') is not None:
+                prices.add(values['price'])
+            if values.get('availability'):
+                availabilities.add(values['availability'])
+            if values.get('currency'):
+                currencies.add(str(values['currency']).strip().upper())
 
         og_price_value = og_price(og_data)
+        price_from_og = False
         if not prices and og_price_value is not None:
-            prices.append(og_price_value)
+            prices.add(og_price_value)
+            price_from_og = True
         og_availability_value = og_availability(og_data)
-        if og_availability_value and og_availability_value not in availabilities:
-            availabilities.append(og_availability_value)
-        og_currency_value = og_currency(og_data)
-        if og_currency_value and og_currency_value not in currencies:
-            currencies.append(og_currency_value)
+        if og_availability_value:
+            availabilities.add(og_availability_value)
+        og_currency_value = (og_currency_for_price(og_data) if price_from_og
+                             else og_currency(og_data))
+        if og_currency_value:
+            currencies.add(og_currency_value)
 
         if len(prices) > 1:
             raise MoreThanOnePriceFound()
         result = {}
         if len(prices) == 1:
-            result['price'] = prices[0]
+            result['price'] = prices.pop()
         if len(currencies) == 1:
-            result['currency'] = currencies[0]
+            result['currency'] = currencies.pop()
         if len(availabilities) == 1:
-            result['availability'] = availabilities[0]
+            result['availability'] = availabilities.pop()
         return Restock(result), False
 
-    if result.get('price') is None:
-        price = og_price(og_data)
-        if price is not None:
-            result['price'] = price
-    if result.get('currency') is None:
-        currency = og_currency(og_data)
-        if currency:
-            result['currency'] = currency
-    if result.get('availability') is None:
-        availability = og_availability(og_data)
-        if availability:
-            result['availability'] = availability
-
+    fill_missing_from_og(result, og_data)
     return Restock(result), False
-
-
-def _safe_float(value):
-    from .pure_python_extractor import _as_price
-    return _as_price(value)
 
 
 def _combine_with_pure_partial(pure_data, fetched, scoped,
@@ -267,17 +253,11 @@ def _combine_with_pure_partial(pure_data, fetched, scoped,
         return fetched
 
     if scoped and fetched_had_main and not pure_had_main:
-        merged = dict(fetched)
-        for field in ('currency', 'availability'):
-            if merged.get(field) is None and pure_data.get(field) is not None:
-                merged[field] = pure_data[field]
+        merged = _fill_missing(dict(fetched), pure_data, ('currency', 'availability'))
         return Restock(merged)
 
     if scoped and pure_had_main and not fetched_had_main:
-        merged = dict(pure_data)
-        for field in ('currency', 'availability'):
-            if merged.get(field) is None and fetched.get(field) is not None:
-                merged[field] = fetched[field]
+        merged = _fill_missing(dict(pure_data), fetched, ('currency', 'availability'))
         return Restock(merged)
 
     fetched_has_data = (fetched.get('price') is not None
@@ -286,10 +266,7 @@ def _combine_with_pure_partial(pure_data, fetched, scoped,
         return Restock(pure_data)
 
     if scoped:
-        merged = dict(pure_data)
-        for field in ('price', 'currency', 'availability'):
-            if merged.get(field) is None and fetched.get(field) is not None:
-                merged[field] = fetched[field]
+        merged = _fill_missing(dict(pure_data), fetched, ('price', 'currency', 'availability'))
         return Restock(merged)
 
     return fetched
@@ -926,8 +903,8 @@ class perform_site_check(difference_detection_processor):
                 changed_detected = True
 
         old_restock = watch.get('restock') or {}
-        new_price = _safe_float(update_obj.get('restock', {}).get('price'))
-        old_price_value = _safe_float(old_restock.get('price'))
+        new_price = _as_price(update_obj.get('restock', {}).get('price'))
+        old_price_value = _as_price(old_restock.get('price'))
         if restock_settings.get('follow_price_changes') and watch.get('restock') and update_obj.get('restock') and new_price is not None:
             price = new_price
             # Compare against the previous check's price (the value 'price' held before this check).
