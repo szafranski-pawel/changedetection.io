@@ -171,7 +171,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
             raise MoreThanOnePriceFound()
         if consensus:
             return Restock(consensus), False
-        return Restock(), False
+        if not product_items:
+            return Restock(), False
 
     if not product_items and not top_level_products:
         offers = top_level_offers(data.get('json-ld', []))
