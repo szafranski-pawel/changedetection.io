@@ -1498,6 +1498,126 @@ class TestRestockProductScope(unittest.TestCase):
         numeric = html.replace('"ABC123"', '"12345"').replace('"999999"', '"777777"')
         self.assertEqual(extract(numeric, 'https://shop.example/p/12345/black').get('price'), 10.0)
 
+    def test_nested_price_unit_text_is_ignored(self):
+        html = """<html><body>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/product/main-1299.html">
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <span itemprop="price">10<span class="unit">/100ml</span></span>
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-1299.html'
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+
+    def test_variant_url_www_and_case_insensitive(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Main",
+         "url": "https://shop.example/products/main", "hasVariant": [
+          {"@type": "Product", "sku": "M-111", "offers": {"@type": "Offer",
+           "url": "https://shop.example/products/main?variant=111", "price": "10"}},
+          {"@type": "Product", "sku": "M-222", "offers": {"@type": "Offer",
+           "url": "https://shop.example/products/main?variant=222", "price": "20"}}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://www.shop.example/Products/Main?variant=222'
+        self.assertEqual(extract(html, url).get('price'), 20.0)
+
+    def test_numeric_product_code_with_size_suffix(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "sku": "12345", "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Rec",
+         "sku": "999999", "offers": {"@type": "Offer", "price": "20"}}
+        </script>
+        </body></html>"""
+
+        self.assertEqual(extract(html, 'https://shop.example/product/12345/128gb').get('price'), 10.0)
+        self.assertEqual(extract(html, 'https://shop.example/p/12345/2xl').get('price'), 10.0)
+
+    def test_tracking_query_keeps_variant_offer_default(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "url": "https://shop.example/products/main", "offers": [
+          {"@type": "Offer", "url": "https://shop.example/products/main?variant=111", "price": "21.99"},
+          {"@type": "Offer", "url": "https://shop.example/products/main?variant=222", "price": "84.99"}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/main?utm_source=newsletter'
+        self.assertEqual(extract(html, url).get('price'), 21.99)
+
+    def test_microdata_duplicate_tie_uses_offer_variant(self):
+        html = """<html><body>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/products/shirt123">
+          <span itemprop="name">Shirt</span><meta itemprop="sku" content="SHIRT123" />
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="url" content="https://shop.example/products/shirt123?variant=111" />
+            <meta itemprop="price" content="10" />
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/products/shirt123">
+          <span itemprop="name">Shirt</span><meta itemprop="sku" content="SHIRT123" />
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="url" content="https://shop.example/products/shirt123?variant=222" />
+            <meta itemprop="price" content="20" />
+            <link itemprop="availability" href="http://schema.org/OutOfStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/products/shirt123?variant=222'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 20.0)
+        self.assertEqual(value.get('availability'), 'outofstock')
+
+    def test_microdata_sibling_size_itemid_is_rejected(self):
+        html = """<html><body>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/product/ABC123/256GB">
+          <span itemprop="name">Phone</span><meta itemprop="sku" content="ABC123" />
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="20" />
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/ABC123/128GB'
+        self.assertIsNone(extract(html, url).get('price'))
+        self.assertIsNone(pure(html, url).get('price'))
+
+    def test_duplicate_size_query_blocks_are_ambiguous(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Shirt",
+         "url": "https://shop.example/products/shirt123?size=S",
+         "offers": {"@type": "Offer", "price": "10", "availability": "https://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Shirt",
+         "url": "https://shop.example/products/shirt123?size=M",
+         "offers": {"@type": "Offer", "price": "20", "availability": "https://schema.org/OutOfStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/shirt123?size=M'
+        self.assertEqual(pure(html, url), {})
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
+
     def test_recommendation_variant_same_value_does_not_hijack_main(self):
         html = """<html><body>
         <script type="application/ld+json">
