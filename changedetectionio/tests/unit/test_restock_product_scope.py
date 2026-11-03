@@ -84,7 +84,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(pure(html, url).get('price'), 189.9)
         self.assertEqual(extruct(html, url).get('price'), 189.9)
 
-    def test_duplicate_product_blocks_without_evidence_are_ambiguous(self):
+    def test_duplicate_product_blocks_without_evidence_use_first(self):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "Same Name",
@@ -102,9 +102,8 @@ class TestRestockProductScope(unittest.TestCase):
         </body></html>"""
 
         url = 'https://shop.example/products/more-collagen'
-        self.assertEqual(pure(html, url), {})
-        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extract(html, url)
+        self.assertEqual(extract(html, url).get('price'), 99.99)
+        self.assertEqual(pure(html, url).get('price'), 99.99)
 
     def test_id_fragment_does_not_block_url_fallback(self):
         html = """<html><body>
@@ -518,7 +517,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(value.get('price'), 74.9)
         self.assertEqual(value.get('availability'), 'outofstock')
 
-    def test_microdata_tie_is_refused(self):
+    def test_microdata_exact_sku_beats_prefix_variant(self):
         html = """<html><body>
         <div itemscope itemtype="http://schema.org/Product">
           <span itemprop="name">Carousel</span>
@@ -538,10 +537,8 @@ class TestRestockProductScope(unittest.TestCase):
 
         url = 'https://shop.example/product/ABC123'
         self.assertEqual(pure(html, url), {})
-        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extract(html, url)
-        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extruct(html, url)
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(extruct(html, url).get('price'), 10.0)
 
     def test_single_microdata_main_accepts_longer_name(self):
         html = """<html><body>
@@ -1163,6 +1160,344 @@ class TestRestockProductScope(unittest.TestCase):
         with self.assertRaises(restock_diff.MoreThanOnePriceFound):
             extract(html, url)
 
+    def test_variant_specific_sku_beats_base_sku(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup",
+         "productGroupID": "MAIN123", "hasVariant": [
+          {"@type": "Product", "sku": "MAIN123",
+           "offers": {"@type": "Offer", "price": "1",
+                      "availability": "https://schema.org/InStock"}},
+          {"@type": "Product", "sku": "MAIN123-RED",
+           "offers": {"@type": "Offer", "price": "20",
+                      "availability": "https://schema.org/OutOfStock"}}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123-RED.html'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 20.0)
+        self.assertEqual(value.get('availability'), 'outofstock')
+
+    def test_variant_offer_url_selects_size(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup",
+         "hasVariant": [
+          {"@type": "Product", "sku": "SHIRT123", "offers": [
+            {"@type": "Offer", "price": "10",
+             "url": "https://shop.example/p/shirt123?variant=S",
+             "availability": "https://schema.org/InStock"},
+            {"@type": "Offer", "price": "20",
+             "url": "https://shop.example/p/shirt123?variant=M",
+             "availability": "https://schema.org/OutOfStock"}]}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/p/shirt123?variant=M'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 20.0)
+        self.assertEqual(value.get('availability'), 'outofstock')
+
+    def test_nested_price_text_does_not_concatenate_amounts(self):
+        html = """<html><body>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/product/main-1299.html">
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <span itemprop="price">10<del>20</del></span>
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-1299.html'
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+
+    def test_microdata_strong_key_mismatch_vetoes_name_match(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "priceCurrency": "PLN"}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/product/other-OTHER999.html">
+          <span itemprop="name">Main</span>
+          <meta itemprop="sku" content="OTHER999" />
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="99" />
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertIsNone(extract(html, url).get('price'))
+        self.assertIsNone(pure(html, url).get('price'))
+
+    def test_microdata_suffix_mismatch_does_not_confirm_sibling(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Group",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "priceCurrency": "PLN"}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="https://shop.example/product/main-MAIN123-BLUE.html">
+          <span itemprop="name">Group</span>
+          <meta itemprop="sku" content="MAIN123-RED" />
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="10" />
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123-BLUE.html'
+        self.assertIsNone(extract(html, url).get('price'))
+
+    def test_ambiguous_products_do_not_fall_through_to_og(self):
+        html = """<html><head>
+        <meta property="og:price:amount" content="15" />
+        </head><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "offers": {"@type": "Offer", "priceCurrency": "PLN"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Rec",
+         "offers": {"@type": "Offer", "price": "99"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/collections/spring'
+        self.assertIsNone(pure(html, url).get('price'))
+        self.assertIsNone(extract(html, url).get('price'))
+
+    def test_og_sale_currency_matches_sale_amount(self):
+        html = """<html><head>
+        <meta property="product:price:amount" content="100" />
+        <meta property="product:price:currency" content="PLN" />
+        <meta property="product:sale_price:amount" content="80" />
+        <meta property="product:sale_price:currency" content="EUR" />
+        </head><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "sku": "MAIN123", "offers": {"@type": "Offer", "price": "80"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-MAIN123.html'
+        self.assertEqual(extract(html, url).get('currency'), 'EUR')
+
+    def test_same_price_duplicate_stock_disagreement_is_ambiguous(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/same",
+         "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
+                    "availability": "https://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/same",
+         "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
+                    "availability": "https://schema.org/OutOfStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/same'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertIsNone(value.get('availability'))
+
+    def test_same_price_offers_do_not_mix_currency_or_stock(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Offer", "price": "10",
+         "priceCurrency": "PLN", "availability": "https://schema.org/InStock"}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Offer", "price": "10",
+         "priceCurrency": "EUR", "availability": "https://schema.org/OutOfStock"}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/foo'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertIsNone(value.get('currency'))
+        self.assertIsNone(value.get('availability'))
+
+    def test_product_group_offers_conflict_without_variants(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup",
+         "name": "Group", "offers": [
+          {"@type": "Offer", "price": "10"},
+          {"@type": "Offer", "price": "20"}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/group'
+        self.assertEqual(pure(html, url), {})
+        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
+            extract(html, url)
+
+    def test_offer_url_extension_is_ignored(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "offers": [
+          {"@type": "Offer", "price": "10",
+           "url": "https://shop.example/main-123.html?variant=111"},
+          {"@type": "Offer", "price": "20",
+           "url": "https://shop.example/main-123.html?variant=222"}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/main-123?variant=222'
+        self.assertEqual(extract(html, url).get('price'), 20.0)
+
+    def test_two_numeric_path_segments_use_last(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "sku": "67890", "offers": {"@type": "Offer", "price": "20"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Rec",
+         "sku": "12345", "offers": {"@type": "Offer", "price": "99"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/c/12345/67890'
+        self.assertEqual(extract(html, url).get('price'), 20.0)
+        self.assertEqual(pure(html, url).get('price'), 20.0)
+
+    def test_variant_offer_url_identifies_variant(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup",
+         "name": "Group", "url": "https://shop.example/products/group",
+         "hasVariant": [
+          {"@type": "Product", "sku": "G-ONE", "offers": {"@type": "Offer",
+           "url": "https://shop.example/products/group?variant=111",
+           "price": "21.99", "priceCurrency": "PLN"}},
+          {"@type": "Product", "sku": "G-TWO", "offers": {"@type": "Offer",
+           "url": "https://shop.example/products/group?variant=222",
+           "price": "84.99", "priceCurrency": "PLN"}}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/group?variant=222'
+        self.assertEqual(extract(html, url).get('price'), 84.99)
+        self.assertEqual(pure(html, url).get('price'), 84.99)
+
+    def test_same_identity_price_tie_uses_first_block(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Huel",
+         "url": "https://shop.example/products/huel",
+         "offers": {"@type": "Offer", "price": "219"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Huel",
+         "url": "https://shop.example/products/huel", "hasVariant": [
+          {"@type": "Product", "sku": "HUE-190",
+           "offers": {"@type": "Offer", "price": "190"}}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/huel'
+        self.assertEqual(extract(html, url).get('price'), 219.0)
+        self.assertEqual(pure(html, url).get('price'), 219.0)
+
+    def test_unpriced_stub_with_same_name_does_not_veto_priced_main(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "url": "https://shop.example/products/main",
+         "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
+                    "availability": "https://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Main",
+         "hasVariant": [{"@type": "Product", "sku": "STUB"}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/collections/spring'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertEqual(value.get('availability'), 'instock')
+
+    def test_single_product_variant_offers_default_to_first(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "url": "https://shop.example/products/main", "offers": [
+          {"@type": "Offer", "url": "https://shop.example/products/main?variant=111",
+           "price": "21.99", "priceCurrency": "PLN"},
+          {"@type": "Offer", "url": "https://shop.example/products/main?variant=222",
+           "price": "84.99", "priceCurrency": "PLN"},
+          {"@type": "Offer", "url": "https://shop.example/products/main?variant=333",
+           "price": "127.49", "priceCurrency": "PLN"}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/main'
+        self.assertEqual(extract(html, url).get('price'), 21.99)
+        self.assertEqual(pure(html, url).get('price'), 21.99)
+
+    def test_variant_stub_uses_parent_offer(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Main",
+         "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
+                    "availability": "https://schema.org/InStock"},
+         "hasVariant": [{"@type": "Product", "sku": "ABC123-RED"}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-ABC123-RED.html'
+        value = extract(html, url)
+        self.assertEqual(value.get('price'), 10.0)
+        self.assertEqual(value.get('availability'), 'instock')
+
+    def test_variant_base_id_does_not_hide_offer_variant(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Main",
+         "productGroupID": "MAIN123", "hasVariant": [
+          {"@type": "Product", "sku": "ABC123-BLUE", "offers": {"@type": "Offer",
+           "url": "https://shop.example/products/main?variant=222",
+           "price": "20", "priceCurrency": "PLN"}},
+          {"@type": "Product", "sku": "ABC123-RED",
+           "@id": "https://shop.example/products/main#red", "offers": {"@type": "Offer",
+           "price": "10", "priceCurrency": "PLN"}}]}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/products/main?variant=222'
+        self.assertEqual(extract(html, url).get('price'), 20.0)
+        self.assertEqual(pure(html, url).get('price'), 20.0)
+
+    def test_size_segment_keeps_previous_product_code(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "sku": "ABC123", "offers": {"@type": "Offer", "price": "10"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Other",
+         "sku": "999999", "offers": {"@type": "Offer", "price": "20"}}
+        </script>
+        </body></html>"""
+        self.assertEqual(extract(html, 'https://shop.example/product/ABC123/128GB').get('price'), 10.0)
+
+        numeric = html.replace('"ABC123"', '"12345"').replace('"999999"', '"777777"')
+        self.assertEqual(extract(numeric, 'https://shop.example/p/12345/black').get('price'), 10.0)
+
     def test_same_identity_duplicate_price_majority_wins(self):
         html = """<html><body>
         <script type="application/ld+json">
@@ -1185,7 +1520,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(extract(html, url).get('price'), 84.99)
         self.assertEqual(pure(html, url).get('price'), 84.99)
 
-    def test_same_identity_duplicate_prices_raise(self):
+    def test_same_identity_duplicate_prices_use_first(self):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "Same",
@@ -1198,9 +1533,8 @@ class TestRestockProductScope(unittest.TestCase):
         </body></html>"""
 
         url = 'https://shop.example/products/same'
-        self.assertEqual(pure(html, url), {})
-        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extract(html, url)
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+        self.assertEqual(extract(html, url).get('price'), 10.0)
 
     def test_bare_offer_microdata_fills_missing_jsonld_price(self):
         html = """<html><body>
@@ -1704,7 +2038,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertIsNone(pure(html, url).get('price'))
         self.assertIsNone(extract(html, url).get('price'))
 
-    def test_duplicate_group_and_product_without_evidence_are_ambiguous(self):
+    def test_duplicate_group_and_product_without_evidence_use_first(self):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "ProductGroup", "name": "Same",
@@ -1722,9 +2056,8 @@ class TestRestockProductScope(unittest.TestCase):
         </body></html>"""
 
         url = 'https://shop.example/products/same'
-        self.assertEqual(pure(html, url), {})
-        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extract(html, url)
+        self.assertEqual(extract(html, url).get('price'), 84.99)
+        self.assertEqual(pure(html, url).get('price'), 84.99)
 
     def test_duplicate_group_with_conflicting_product_offers_uses_group_price(self):
         html = """<html><body>

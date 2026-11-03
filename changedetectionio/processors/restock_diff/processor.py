@@ -94,6 +94,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         microdata_product_data,
         og_availability,
         og_currency,
+        og_currency_for_amount,
         og_currency_for_price,
         og_price,
         product_offer_data,
@@ -165,13 +166,12 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                           in _collect_product_candidates(data.get('json-ld', []))
                           if top_level]
     if len(top_level_products) > 1:
-        consensus, conflict = top_level_product_consensus(top_level_products)
+        consensus, conflict = top_level_product_consensus(top_level_products, url=url)
         if conflict:
             raise MoreThanOnePriceFound()
         if consensus:
             return Restock(consensus), False
-        if any(has_explicit_missing_price(product) for product in top_level_products):
-            return Restock(), False
+        return Restock(), False
 
     if not product_items and not top_level_products:
         offers = top_level_offers(data.get('json-ld', []))
@@ -220,8 +220,12 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
         og_availability_value = og_availability(og_data)
         if og_availability_value:
             availabilities.add(og_availability_value)
-        og_currency_value = (og_currency_for_price(og_data) if price_from_og
-                             else og_currency(og_data))
+        if price_from_og:
+            og_currency_value = og_currency_for_price(og_data)
+        elif len(prices) == 1:
+            og_currency_value = og_currency_for_amount(og_data, next(iter(prices)))
+        else:
+            og_currency_value = og_currency(og_data)
         if og_currency_value:
             currencies.add(og_currency_value)
 

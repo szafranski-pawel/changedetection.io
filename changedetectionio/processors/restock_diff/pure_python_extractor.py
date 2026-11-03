@@ -104,9 +104,12 @@ def _jsonld_types(obj):
     return _type_names(_ci_get(obj, '@type'))
 
 
+def _has_variants(product):
+    return bool(_as_list(_ci_get(product, 'hasVariant')))
+
+
 def _is_group(product):
-    return ('productgroup' in _jsonld_types(product)
-            or bool(_as_list(_ci_get(product, 'hasVariant'))))
+    return 'productgroup' in _jsonld_types(product) or _has_variants(product)
 
 
 def _normalize_name(value):
@@ -195,16 +198,19 @@ def watch_url_product_keys(url, include_variant=False):
             if segment.isdigit() and index > 0:
                 previous = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[index - 1],
                                   flags=re.IGNORECASE)
-                if _TRAILING_ROUTE.match(previous) or _significant_tokens(previous):
+                if _TRAILING_ROUTE.match(previous):
                     index -= 1
                     continue
             break
         if index >= 0:
             add(segments[index])
-            if not tokens and index > 0:
+            if index > 0:
                 previous = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[index - 1],
                                   flags=re.IGNORECASE)
                 if not previous.isdigit():
+                    add(previous)
+                elif index > 1 and segments[index - 2].casefold() in (
+                        'p', 'product', 'products', 'dp'):
                     add(previous)
 
     if not tokens or include_variant:
@@ -235,6 +241,10 @@ def _variant_keys(variant):
     keys = []
     for name in ('sku', 'productID', 'mpn', 'gtin13', '@id', 'url'):
         keys.extend(_string_values(_ci_get(variant, name)))
+    for offer in _as_list(_ci_get(variant, 'offers')):
+        if isinstance(offer, dict):
+            for name in ('url', '@id'):
+                keys.extend(_string_values(_ci_get(offer, name)))
     return keys
 
 
@@ -285,6 +295,9 @@ def _url_identity(url):
     """Return (last-path-segment code, variant values, product-id values)."""
     parsed = urlparse(str(url))
     segments = [unquote(segment) for segment in parsed.path.rstrip('/').split('/') if segment]
+    if segments:
+        segments[-1] = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[-1],
+                              flags=re.IGNORECASE)
     last = re.sub(r'[^a-z0-9]+', '', segments[-1].casefold()) if segments else ''
     variant_values = set()
     product_values = set()
@@ -303,30 +316,51 @@ def _url_identity(url):
     return last, variant_values, product_values
 
 
-def _variant_matches_url(variant, url):
-    """Return True when a variant's own code appears in the watched product URL."""
+def _identities_match(watch, other):
+    watch_last, watch_variants, watch_products = watch
+    other_last, other_variants, other_products = other
+    if watch_variants or other_variants:
+        return bool(watch_variants and other_variants
+                    and watch_variants & other_variants)
+    if watch_products or other_products:
+        return bool(watch_products and other_products
+                    and watch_products & other_products)
+    return bool(watch_last and watch_last == other_last)
+
+
+def _last_segment(url):
+    parsed = urlparse(str(url))
+    segments = [unquote(segment) for segment in parsed.path.rstrip('/').split('/') if segment]
+    if not segments:
+        return ''
+    return re.sub(r'\.(?:html?|php|aspx?)$', '', segments[-1], flags=re.IGNORECASE)
+
+
+def _variant_match_score(variant, url):
+    """Return how specifically a variant matches the watched URL (0 = no match)."""
     if not url or not isinstance(variant, dict):
-        return False
-    last, variant_values, product_values = _url_identity(url)
+        return 0
+    watch_identity = _url_identity(url)
+    _last, variant_values, product_values = watch_identity
+    last_tokens = set(_key_tokens(_last_segment(url)))
+    best = 0
     for key in _variant_keys(variant):
-        if '/' in key:
-            key_last, key_variants, key_products = _url_identity(key)
-            if key_variants and variant_values:
-                return bool(key_variants & variant_values)
-            if key_variants or variant_values:
-                return key_last == last
-            if key_products and product_values:
-                return bool(key_products & product_values)
-            if key_products or product_values:
-                return key_last == last
-            return bool(key_last) and key_last == last
         normalized = re.sub(r'[^a-z0-9]+', '', key.casefold())
+        if '/' in key:
+            if _identities_match(watch_identity, _url_identity(key)):
+                best = max(best, len(normalized))
+            continue
         if len(normalized) < 3:
             continue
-        if (normalized in variant_values or normalized in product_values
-                or (last and normalized in last)):
-            return True
-    return False
+        if normalized in variant_values or normalized in product_values:
+            best = max(best, len(normalized))
+        elif set(_key_tokens(key)) <= last_tokens:
+            best = max(best, len(normalized))
+    return best
+
+
+def _variant_matches_url(variant, url):
+    return _variant_match_score(variant, url) > 0
 
 
 def _set_offers(product, offers):
@@ -336,13 +370,20 @@ def _set_offers(product, offers):
     return result
 
 
-def _variant_with_parent(variant, parent):
-    result = {**variant}
+def _variant_with_parent(variant, parent, url=None):
+    result = _select_offer_by_url(variant, url) if url else {**variant}
     for field in ('priceCurrency', 'availability'):
         if _ci_get(result, field) is None and _ci_get(parent, field) is not None:
             result[field] = _ci_get(parent, field)
     offers = [offer for offer in _as_list(_ci_get(result, 'offers'))
               if isinstance(offer, dict)]
+    if (not offers and _ci_get(result, 'price') is None
+            and not has_explicit_missing_price(variant)):
+        parent_offers = [offer for offer in _as_list(_ci_get(parent, 'offers'))
+                         if isinstance(offer, dict)]
+        if parent_offers:
+            result = _set_offers(result, parent_offers)
+            offers = parent_offers
     if len(offers) > 1:
         priced = [offer for offer in offers if _offer_price(offer) is not None]
         if priced:
@@ -351,20 +392,13 @@ def _variant_with_parent(variant, parent):
 
 
 def _offer_matches_watch(offer, url):
-    offer_url = _ci_get(offer, 'url') or _ci_get(offer, '@id')
-    if not offer_url or not url:
+    if not url:
         return False
-    watch_last, watch_variants, watch_products = _url_identity(url)
-    offer_last, offer_variants, offer_products = _url_identity(offer_url)
-    if watch_variants or offer_variants:
-        if watch_variants and offer_variants:
-            return bool(watch_variants & offer_variants)
-        return watch_last == offer_last
-    if watch_products or offer_products:
-        if watch_products and offer_products:
-            return bool(watch_products & offer_products)
-        return watch_last == offer_last
-    return bool(watch_last) and watch_last == offer_last
+    watch_identity = _url_identity(url)
+    for key in (_ci_get(offer, 'url'), _ci_get(offer, '@id')):
+        if key and _identities_match(watch_identity, _url_identity(key)):
+            return True
+    return False
 
 
 def _product_has_watch_offer(product, url):
@@ -386,6 +420,12 @@ def _select_offer_by_url(product, url):
     matches = [offer for offer in offers if _offer_matches_watch(offer, url)]
     if len(matches) == 1:
         return _set_offers(product, [matches[0]])
+    _last, watch_variants, watch_products = _url_identity(url)
+    if not watch_variants and not watch_products:
+        if all(_ci_get(offer, 'url') or _ci_get(offer, '@id') for offer in offers):
+            priced = [offer for offer in offers if _offer_price(offer) is not None]
+            if priced:
+                return _set_offers(product, [priced[0]])
     return product
 
 
@@ -577,7 +617,7 @@ def product_offer_data(product):
 
     offers = [(_offer_price(offer), _offer_currency(offer), _offer_availability(offer))
               for offer in _iter_offers(product)]
-    first_wins = _is_group(product)
+    first_wins = _has_variants(product)
 
     if first_wins:
         row = next((entry for entry in offers if entry[0] is not None), None)
@@ -612,7 +652,7 @@ def product_offer_data(product):
 def has_conflicting_product_prices(product):
     if not isinstance(product, dict):
         return False
-    if _is_group(product):
+    if _has_variants(product):
         return False
     prices = set()
     for offer in _iter_offers(product):
@@ -643,20 +683,25 @@ def _collapse_duplicate_products(top_level_products, url=None):
                        if _product_has_watch_offer(product, url)]
             if len(matched) == 1:
                 return matched
-        priced = [product for product in top_level_products
-                  if product_offer_data(product).get('price') is not None]
+        priced = [(product, data) for product, data in zip(top_level_products, offer_data)
+                  if data.get('price') is not None]
         if len(priced) == 1:
-            return priced
+            return [priced[0][0]]
         counts = {}
-        for product in priced:
-            price = product_offer_data(product)['price']
-            counts[price] = counts.get(price, 0) + 1
+        for _product, data in priced:
+            counts[data['price']] = counts.get(data['price'], 0) + 1
         if counts:
             best_price, best_count = max(counts.items(), key=lambda item: item[1])
             if best_count * 2 > len(top_level_products):
-                return [next(product for product in priced
-                             if product_offer_data(product)['price'] == best_price)]
-        return top_level_products
+                winning = [data for _product, data in priced
+                           if data['price'] == best_price]
+                base = {key: value for key, value in winning[0].items() if key != 'price'}
+                if all({key: value for key, value in data.items() if key != 'price'} == base
+                       for data in winning):
+                    return [next(product for product, data in priced
+                                 if data['price'] == best_price)]
+                return top_level_products
+        return [top_level_products[0]]
 
     return top_level_products
 
@@ -666,7 +711,7 @@ def top_level_offers(jsonld_blocks):
             if isinstance(block, dict) and 'offer' in _jsonld_types(block)]
 
 
-def top_level_product_consensus(products, offers_mode=False):
+def top_level_product_consensus(products, offers_mode=False, url=None):
     """Return (data, has_conflict) for unmatched top-level products/offers."""
     if any(has_conflicting_product_prices(product) for product in products):
         return {}, True
@@ -674,27 +719,44 @@ def top_level_product_consensus(products, offers_mode=False):
     if not offers_mode:
         if any(has_explicit_missing_price(product) for product in products):
             return {}, False
-        if any(value.get('price') is None for value in values):
-            return {}, False
+        unpriced = [(product, data) for product, data in zip(products, values)
+                    if data.get('price') is None]
+        if unpriced:
+            priced = [(product, data) for product, data in zip(products, values)
+                      if data.get('price') is not None]
+            if not priced:
+                return {}, False
+            url_tokens = watch_url_product_keys(url, include_variant=True) if url else set()
+            priced_names = {_normalize_name(_ci_get(product, 'name'))
+                            for product, _data in priced}
+            for product, _data in unpriced:
+                if url and _match_product_score(product, url_tokens) > 0:
+                    return {}, False
+                if _as_list(_ci_get(product, 'offers')):
+                    return {}, False
+                name = _normalize_name(_ci_get(product, 'name'))
+                if not name or name not in priced_names:
+                    return {}, False
+            products = [product for product, data in zip(products, values)
+                        if data.get('price') is not None]
+            values = [data for data in values if data.get('price') is not None]
     prices = {data.get('price') for data in values if data.get('price') is not None}
     if len(prices) > 1:
         return {}, True
     if len(prices) == 1:
-        result = dict(next(data for data in values if data.get('price') is not None))
-        if offers_mode:
-            for other in values:
-                _fill_missing(result, other, ('currency', 'availability'))
+        priced_values = [data for data in values if data.get('price') is not None]
+        result = dict(priced_values[0])
+        field_values = priced_values if offers_mode else values
+        currencies = {data.get('currency') for data in field_values if data.get('currency')}
+        availabilities = {data.get('availability') for data in field_values if data.get('availability')}
+        if len(currencies) == 1:
+            result['currency'] = currencies.pop()
         else:
-            currencies = {data.get('currency') for data in values if data.get('currency')}
-            availabilities = {data.get('availability') for data in values if data.get('availability')}
-            if len(currencies) == 1:
-                result['currency'] = currencies.pop()
-            else:
-                result.pop('currency', None)
-            if len(availabilities) == 1:
-                result['availability'] = availabilities.pop()
-            else:
-                result.pop('availability', None)
+            result.pop('currency', None)
+        if len(availabilities) == 1:
+            result['availability'] = availabilities.pop()
+        else:
+            result.pop('availability', None)
         return result, False
     if offers_mode and values:
         result = dict(values[0])
@@ -722,7 +784,7 @@ def fill_missing_from_og(result, og_data, fill_price=True):
         if price_filled:
             currency = og_currency_for_price(og_data)
         elif result.get('price') is not None:
-            currency = _og_currency(og_data, ('product:price:currency', 'og:price:currency'))
+            currency = og_currency_for_amount(og_data, result.get('price'))
         else:
             currency = og_currency(og_data)
         if currency:
@@ -743,20 +805,22 @@ def select_main_product(jsonld_blocks, url=None):
     if url:
         candidates = [(_select_offer_by_url(product, url), top_level)
                       for product, top_level in candidates]
-        watch_tokens = watch_url_product_keys(url, include_variant=True)
         top_level_count = sum(1 for _product, top_level in candidates if top_level)
         matches = []
         for product, top_level in candidates:
             if not top_level and top_level_count:
                 continue
-            if (top_level_count > 1
-                    and _match_product_score(product, watch_tokens) <= 0):
-                continue
             for variant in _as_list(_ci_get(product, 'hasVariant')):
-                if isinstance(variant, dict) and _variant_matches_url(variant, url):
-                    matches.append((variant, product))
-        if len(matches) == 1:
-            return _variant_with_parent(*matches[0])
+                if not isinstance(variant, dict):
+                    continue
+                score = _variant_match_score(variant, url)
+                if score:
+                    matches.append((score, variant, product))
+        if matches:
+            best_score = max(entry[0] for entry in matches)
+            best = [entry for entry in matches if entry[0] == best_score]
+            if len(best) == 1:
+                return _variant_with_parent(best[0][1], best[0][2], url=url)
 
     def score_candidates(url_tokens):
         scored = []
@@ -816,7 +880,14 @@ def select_microdata_product(items, url=None, jsonld_product=None):
     if url_tokens:
         scored = []
         for index, item in enumerate(candidates):
-            score = _match_keys_score(_microdata_item_keys(item), url_tokens)
+            strong = _microdata_item_strong_keys(item)
+            if (any(_has_significant_tokens(key) for key in strong)
+                    and not any(_scope_key_matches(key, url) for key in strong)):
+                continue
+            keys = _microdata_item_keys(item)
+            if not any(_scope_key_matches(key, url) for key in keys):
+                continue
+            score = _match_keys_score(keys, url_tokens)
             if score:
                 strong = bool(_match_keys_score(_microdata_item_strong_keys(item), url_tokens))
                 scored.append((score, strong, -index, item))
@@ -826,9 +897,6 @@ def select_microdata_product(items, url=None, jsonld_product=None):
             tied = [entry for entry in scored
                     if entry[0] == best[0] and entry[1] == best[1]]
             if len(tied) > 1:
-                identities = [_microdata_identity(entry[3]) for entry in tied]
-                if all(identities[0]) and all(identity == identities[0] for identity in identities):
-                    return tied[0][3]
                 offer_data = [microdata_product_data(entry[3]) for entry in tied]
                 if all(data == offer_data[0] for data in offer_data):
                     return tied[0][3]
@@ -840,15 +908,21 @@ def select_microdata_product(items, url=None, jsonld_product=None):
         if isinstance(jsonld_product, dict) and len(candidates) == 1:
             if _match_product_score(jsonld_product, url_tokens) > 0:
                 item = candidates[0]
+                strong = _microdata_item_strong_keys(item)
+                if (any(_has_significant_tokens(key) for key in strong)
+                        and not any(_scope_key_matches(key, url) for key in strong)):
+                    return None
                 keys = _microdata_item_keys(item)
-                if any(_has_significant_tokens(key) for key in keys):
-                    return item if _match_keys_score(keys, url_tokens) > 0 else None
+                if any(_scope_key_matches(key, url) for key in keys):
+                    return item
                 main_name = _normalize_name(_ci_get(jsonld_product, 'name'))
                 names = [_normalize_name(value) for value in
                          _string_values((item.get('properties') or {}).get('name'))]
                 if _microdata_name_matches(main_name, names):
                     return item
-                return item if not names else None
+                if not names and not any(_has_significant_tokens(key) for key in keys):
+                    return item
+                return None
 
         if not isinstance(jsonld_product, dict):
             if len(candidates) == 1:
@@ -872,15 +946,26 @@ def select_microdata_product(items, url=None, jsonld_product=None):
     return candidates[0] if len(candidates) == 1 else None
 
 
+def _scope_key_matches(key, url):
+    last_tokens = set(_key_tokens(_last_segment(url)))
+    if not last_tokens:
+        return False
+    key_tokens = set(_key_tokens(_last_segment(key) if '/' in key else key))
+    return bool(key_tokens) and key_tokens <= last_tokens
+
+
 def _select_microdata_scope(microdata, url, main_product):
     """Return the single pure-Python Product scope matching the main product."""
     scopes = microdata.get('product_scopes_data') or []
     if len(scopes) != 1:
         return None
     scope = scopes[0]
-    url_tokens = watch_url_product_keys(url, include_variant=True)
     keys = scope.get('product_keys', [])
-    if url_tokens and _match_keys_score(keys, url_tokens):
+    strong_keys = scope.get('product_strong_keys', [])
+    if (any(_has_significant_tokens(key) for key in strong_keys)
+            and not any(_scope_key_matches(key, url) for key in strong_keys)):
+        return None
+    if any(_scope_key_matches(key, url) for key in keys):
         return scope
     names = [_normalize_name(value) for value in scope.get('product_names', [])
              if _normalize_name(value)]
@@ -991,6 +1076,26 @@ def og_currency_for_price(og_data):
     return _og_currency(og_data, keys)
 
 
+def og_currency_for_amount(og_data, amount):
+    """Use the currency family whose amount matches an already-known price."""
+    amount_keys = ('product:sale_price:amount', 'og:sale_price:amount',
+                   'product:price:amount', 'og:price:amount')
+    if amount is None:
+        return None
+    if not any(key in og_data for key in amount_keys):
+        return og_currency(og_data)
+    for key in amount_keys:
+        price = _as_price(og_data.get(key))
+        if price is None or price != amount:
+            continue
+        if 'sale' in key:
+            return _og_currency(og_data, (
+                'product:sale_price:currency', 'og:sale_price:currency'))
+        return _og_currency(og_data, (
+            'product:price:currency', 'og:price:currency'))
+    return None
+
+
 def og_availability(og_data):
     for key in ('product:availability', 'og:availability'):
         if key in og_data:
@@ -1087,15 +1192,19 @@ class MicrodataExtractor(HTMLParser):
             'currency': None,
             'availability': None,
             'prices': [],
+            'offer_prices': [],
+            'legacy_price': None,
             'currencies': [],
             'availabilities': [],
             'product_scopes': 0,
             'product_keys': [],
+            'product_strong_keys': [],
             'product_names': [],
             'product_scopes_data': [],
         }
         self.current_itemprop = None
         self.current_itemprop_text = []
+        self.current_itemprop_all_text = []
         self.current_itemprop_depth = 0
         self.tag_stack = []
 
@@ -1105,17 +1214,27 @@ class MicrodataExtractor(HTMLParser):
                 return scope
         return None
 
+    def _offer_scope(self):
+        for _tag, scope in reversed(self.tag_stack):
+            if scope and scope['is_offer']:
+                return scope
+        return None
+
     def _record(self, field, value):
         self.microdata[field].append(value)
         scope = self._product_scope()
         if scope is not None:
-            scope[field].append(value)
+            if field == 'prices' and self._offer_scope() is not None:
+                scope['offer_prices'].append(value)
+            else:
+                scope[field].append(value)
 
     def _start_itemprop(self, name, tag):
         if tag in _VOID_TAGS:
             return
         self.current_itemprop = name
         self.current_itemprop_text = []
+        self.current_itemprop_all_text = []
         self.current_itemprop_depth = 1
 
     def handle_starttag(self, tag, attrs):
@@ -1126,12 +1245,15 @@ class MicrodataExtractor(HTMLParser):
 
         scope = None
         if 'itemscope' in attrs_dict:
-            itemtype = (attrs_dict.get('itemtype') or '').casefold()
+            itemtype = (attrs_dict.get('itemtype') or '').casefold().rsplit('/', 1)[-1]
             scope = {
-                'is_product': 'product' in itemtype,
+                'is_product': itemtype in ('product', 'productgroup'),
+                'is_offer': itemtype == 'offer',
                 'product_keys': [],
+                'product_strong_keys': [],
                 'product_names': [],
                 'prices': [],
+                'offer_prices': [],
                 'currencies': [],
                 'availabilities': [],
             }
@@ -1160,6 +1282,8 @@ class MicrodataExtractor(HTMLParser):
                 value = attrs_dict.get('content') or attrs_dict.get('href')
                 if value:
                     self._record('product_keys', value)
+                    if itemprop in ('sku', 'productID'):
+                        self._record('product_strong_keys', value)
                 else:
                     self._start_itemprop(itemprop, tag)
 
@@ -1192,6 +1316,12 @@ class MicrodataExtractor(HTMLParser):
         name = self.current_itemprop
         parts = [part for part in self.current_itemprop_text if part.strip()]
         text = ''.join(parts).strip()
+        legacy = None
+        for part in reversed(self.current_itemprop_all_text):
+            price = Restock().parse_currency(part.strip())
+            if price is not None:
+                legacy = price
+                break
         if name == 'price' and text:
             # Not [^\d.] + float(), that breaks "39,99" (#4493), see Restock.parse_currency()
             price = Restock().parse_currency(text)
@@ -1199,28 +1329,36 @@ class MicrodataExtractor(HTMLParser):
                 self.microdata['price'] = price
                 self._record('prices', text)
             else:
-                # Keep the legacy last-text-chunk behavior for url=None callers.
-                for part in reversed(parts):
+                for part in reversed(self.current_itemprop_all_text):
                     price = Restock().parse_currency(part.strip())
                     if price is not None:
                         self.microdata['price'] = price
+                        self._record('prices', part.strip())
                         break
         elif name == 'priceCurrency' and text:
             self.microdata['currency'] = text
             self._record('currencies', text)
         elif name in ('sku', 'productID', 'url') and text:
             self._record('product_keys', text)
+            if name in ('sku', 'productID'):
+                self._record('product_strong_keys', text)
         elif name == 'name' and text:
-            self._record('product_names', text)
+            self._record('product_names', ' '.join(parts))
         elif name == 'availability' and text:
             self.microdata['availability'] = text
             self._record('availabilities', text)
+        if name == 'price' and legacy is not None:
+            self.microdata['legacy_price'] = legacy
         self.current_itemprop = None
         self.current_itemprop_text = []
+        self.current_itemprop_all_text = []
         self.current_itemprop_depth = 0
 
     def handle_data(self, data):
-        if self.current_itemprop:
+        if not self.current_itemprop:
+            return
+        self.current_itemprop_all_text.append(data)
+        if self.current_itemprop_depth <= 1 or not re.search(r'\d', data):
             self.current_itemprop_text.append(data)
 
     def handle_endtag(self, tag):
@@ -1349,6 +1487,9 @@ def _legacy_query_price_availability(extracted_data):
 
     # 3. Use microdata as last resort
     microdata = extracted_data.get('microdata', {})
+    legacy_price = microdata.get('legacy_price')
+    if not result.get('price') and legacy_price is not None:
+        result['price'] = legacy_price
     if not result.get('price') and 'price' in microdata and microdata['price'] is not None:
         result['price'] = microdata['price']
     if not result.get('currency') and 'currency' in microdata and microdata['currency'] is not None:
@@ -1392,9 +1533,17 @@ def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
                     _match_keys_score(keys, url_tokens) > 0
                     or (main_url_matched and _microdata_name_matches(main_name, names)))
                 source = microdata if confirmed else {}
-        prices = ({_as_price(value) for value in source.get('prices', [])}
-                  if scopes == 0 or confirmed else set())
-        prices.discard(None)
+        if scopes == 1 and confirmed:
+            prices = {_as_price(value) for value in source.get('offer_prices', [])}
+            prices.discard(None)
+            if not prices:
+                prices = {_as_price(value) for value in source.get('prices', [])}
+                prices.discard(None)
+        elif scopes == 0:
+            prices = {_as_price(value) for value in source.get('prices', [])}
+            prices.discard(None)
+        else:
+            prices = set()
         scope_conflict = scopes == 1 and confirmed and len(prices) > 1
         if scope_conflict and result.get('price') is None:
             return {}
@@ -1435,11 +1584,12 @@ def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
     if len(top_level_products) > 1:
         if any(has_explicit_missing_price(product) for product in top_level_products):
             return {}
-        result, conflict = top_level_product_consensus(top_level_products)
+        result, conflict = top_level_product_consensus(top_level_products, url=url)
         if conflict:
             return {}
         if result:
             return result
+        return {}
 
     if scopes == 0:
         offers = top_level_offers(extracted_data.get('json-ld', []))
@@ -1484,8 +1634,12 @@ def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
     currencies = {str(value).strip().upper()
                   for value in microdata.get('currencies', [])
                   if not _is_missing(value)}
-    og_currency_value = (og_currency_for_price(og_data) if price_from_og
-                         else og_currency(og_data))
+    if price_from_og:
+        og_currency_value = og_currency_for_price(og_data)
+    elif len(prices) == 1:
+        og_currency_value = og_currency_for_amount(og_data, next(iter(prices)))
+    else:
+        og_currency_value = og_currency(og_data)
     if og_currency_value:
         currencies.add(og_currency_value)
 
