@@ -14,13 +14,15 @@ extruct (with subprocess isolation on Linux).
 
 from html.parser import HTMLParser
 import html as html_module
-from urllib.parse import unquote, parse_qs, urlparse
+from urllib.parse import unquote, parse_qs, urljoin, urlparse
 import json
+import os
 import re
 from loguru import logger
 from . import MISSING_STRINGS, Restock
 
 _UNSET = object()
+IDENTITY_V2 = os.environ.get('RESTOCK_IDENTITY_V2') == '1'
 _VOID_TAGS = {
     'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
     'link', 'meta', 'param', 'source', 'track', 'wbr',
@@ -595,12 +597,80 @@ def _product_identity(product):
     return name, parts['path'], query
 
 
+_GRAPH_NODE_CAP = 1000
+_GRAPH_LINK_KEYS = {
+    'mainentity', 'mainentityofpage', 'hasvariant', 'isvariantof',
+}
+
+
+def _resolve_jsonld_graph(blocks, base_url=None):
+    """Resolve reference-only @id objects without mutating the input.
+
+    Returns (resolved_blocks, conflict). A duplicate @id is left unresolved and
+    marks the graph as conflicting rather than silently merging the nodes.
+    """
+    if not blocks:
+        return blocks, False
+
+    nodes = []
+    index = {}
+
+    def collect(value):
+        if isinstance(value, list):
+            for entry in value:
+                collect(entry)
+            return
+        if not isinstance(value, dict):
+            return
+        nodes.append(value)
+        identifier = _ci_get(value, '@id')
+        if isinstance(identifier, str) and len(value) > 1:
+            absolute = urljoin(base_url or '', identifier)
+            index.setdefault(absolute, []).append(value)
+        for child in value.values():
+            collect(child)
+
+    for block in blocks:
+        collect(block)
+    if len(nodes) > _GRAPH_NODE_CAP:
+        return blocks, True
+
+    duplicate = any(len(entries) > 1 for entries in index.values())
+    referenced_duplicate = False
+
+    def resolve(value, seen):
+        nonlocal referenced_duplicate
+        if isinstance(value, list):
+            return [resolve(entry, seen) for entry in value]
+        if not isinstance(value, dict):
+            return value
+        identifier = _ci_get(value, '@id')
+        absolute = urljoin(base_url or '', identifier) if isinstance(identifier, str) else None
+        if absolute and len(value) == 1:
+            targets = index.get(absolute, [])
+            if len(targets) > 1:
+                referenced_duplicate = True
+                return dict(value)
+            if len(targets) == 1 and absolute not in seen:
+                return resolve(targets[0], seen | {absolute})
+        result = {}
+        for key, child in value.items():
+            if isinstance(key, str) and key.casefold() in _GRAPH_LINK_KEYS:
+                result[key] = resolve(child, seen)
+            else:
+                result[key] = resolve(child, seen)
+        return result
+
+    return [resolve(block, set()) for block in blocks], duplicate or referenced_duplicate
+
+
 def _collect_product_candidates(jsonld_blocks):
     """Return [(product, is_top_level), ...] from JSON-LD blocks."""
     candidates = []
+    seen = set()
     nested_keys = {
-        'hasvariant', 'issimilarto', 'isaccessoryorsparepartfor', 'isrelatedto',
-        'itemlistelement', 'offers'
+        'hasvariant', 'isvariantof', 'issimilarto',
+        'isaccessoryorsparepartfor', 'isrelatedto', 'itemlistelement', 'offers'
     }
 
     def walk(value, nested=False):
@@ -613,6 +683,14 @@ def _collect_product_candidates(jsonld_blocks):
 
         types = _jsonld_types(value)
         if 'product' in types or 'productgroup' in types:
+            try:
+                signature = json.dumps(value, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                signature = None
+            if signature is not None and signature in seen:
+                return
+            if signature is not None:
+                seen.add(signature)
             candidates.append((value, not nested))
             for key, child in value.items():
                 if isinstance(key, str) and key.casefold() in nested_keys:
@@ -926,8 +1004,113 @@ def fill_missing_from_og(result, og_data, fill_price=True):
     return result
 
 
-def select_main_product(jsonld_blocks, url=None):
+def _v2_strong_keys(product, role):
+    names = ('sku', 'productID', 'productGroupID') if role == 'group' else (
+        'sku', 'productID')
+    keys = []
+    for name in names:
+        keys.extend(_string_values(_ci_get(product, name)))
+    return keys
+
+
+def _v2_candidates(jsonld_blocks):
+    candidates = _collect_product_candidates(jsonld_blocks)
+    parents = {}
+
+    def walk(value):
+        if isinstance(value, list):
+            for entry in value:
+                walk(entry)
+            return
+        if not isinstance(value, dict):
+            return
+        for variant in _as_list(_ci_get(value, 'hasVariant')):
+            if isinstance(variant, dict):
+                parents[id(variant)] = value
+        for child in value.values():
+            walk(child)
+
+    for block in jsonld_blocks:
+        walk(block)
+    for product, _top_level in candidates:
+        parent = _ci_get(product, 'isVariantOf')
+        if isinstance(parent, dict):
+            parents.setdefault(id(product), parent)
+
+    products = []
+    groups = []
+    variants = []
+    for product, _top_level in candidates:
+        if id(product) in parents:
+            variants.append((parents[id(product)], product))
+        elif _has_variants(product) or 'productgroup' in _jsonld_types(product):
+            groups.append(product)
+        else:
+            products.append(product)
+    return products, groups, variants
+
+
+def select_main_product_v2(jsonld_blocks, url=None):
+    """Role-aware selection on a resolved JSON-LD graph."""
+    blocks, conflict = _resolve_jsonld_graph(jsonld_blocks or [], base_url=url)
+    if conflict:
+        return None
+    products, groups, variants = _v2_candidates(blocks)
+    products = [_select_offer_by_url(product, url) for product in products]
+    groups = [_select_offer_by_url(group, url) for group in groups]
+    watch_tokens = watch_url_product_keys(url, include_variant=True)
+
+    matches = []
+    for parent, variant in variants:
+        score = _variant_match_score(variant, url)
+        if score:
+            matches.append((score, variant, parent))
+    if matches:
+        best_score = max(entry[0] for entry in matches)
+        best = [entry for entry in matches if entry[0] == best_score]
+        if len(best) == 1:
+            return _variant_with_parent(best[0][1], best[0][2], url=url)
+        return None
+
+    top = products + groups
+    exact = [product for product in top if _exact_url_match(product, url)]
+    if exact:
+        collapsed = _collapse_duplicate_products(exact, url=url)
+        return collapsed[0] if len(collapsed) == 1 else None
+
+    for role, items in (('group', groups), ('product', products)):
+        scored = []
+        for item in items:
+            score = _match_keys_score(_v2_strong_keys(item, role), watch_tokens)
+            if score:
+                scored.append((score, item))
+        if not scored:
+            continue
+        best_score = max(entry[0] for entry in scored)
+        best = [entry[1] for entry in scored if entry[0] == best_score]
+        if len(best) == 1:
+            return best[0]
+        collapsed = _collapse_duplicate_products(best, url=url)
+        return collapsed[0] if len(collapsed) == 1 else None
+
+    collapsed = _collapse_duplicate_products(top, url=url)
+    if len(collapsed) != 1:
+        return None
+    product = collapsed[0]
+    if not watch_tokens or not _product_keys(product):
+        return product
+    return product if _product_identity_confirmed(product, url) else None
+
+
+def select_main_product(jsonld_blocks, url=None, resolve_graph=False, identity_v2=False):
     """Select the Product/ProductGroup that belongs to the watched URL."""
+    if identity_v2:
+        return select_main_product_v2(jsonld_blocks, url=url)
+    if resolve_graph:
+        jsonld_blocks, graph_conflict = _resolve_jsonld_graph(
+            jsonld_blocks or [], base_url=url)
+        if graph_conflict:
+            return None
     candidates = _collect_product_candidates(jsonld_blocks or [])
     if not candidates:
         return None
@@ -1759,7 +1942,8 @@ def _legacy_query_price_availability(extracted_data):
 def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
     """Product-scoped extraction: select one product, then use only its values."""
     if main_product is _UNSET:
-        main_product = select_main_product(extracted_data.get('json-ld', []), url=url)
+        main_product = select_main_product(
+            extracted_data.get('json-ld', []), url=url, identity_v2=IDENTITY_V2)
     og_data = extracted_data.get('opengraph', {}) or {}
 
     if main_product:

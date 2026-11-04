@@ -84,6 +84,7 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     extraction engine.
     """
     from .pure_python_extractor import (
+        IDENTITY_V2,
         _collect_product_candidates,
         _match_product_score,
         fill_missing_from_og,
@@ -109,7 +110,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     product_items = [item for item in (data.get('microdata') or [])
                      if 'product' in microdata_item_types(item)
                      or 'productgroup' in microdata_item_types(item)]
-    main_product = select_main_product(data.get('json-ld', []), url=url)
+    main_product = select_main_product(
+        data.get('json-ld', []), url=url, identity_v2=IDENTITY_V2)
 
     if main_product:
         if has_conflicting_product_prices(main_product):
@@ -451,11 +453,15 @@ def extract_itemprop_availability_safe(html_content, url=None) -> Restock:
 
     # Step 1: Try pure Python extraction first (fast, no lxml, no memory leak)
     try:
-        from .pure_python_extractor import extract_metadata_pure_python, query_price_availability, select_main_product
+        from .pure_python_extractor import (
+            IDENTITY_V2, extract_metadata_pure_python, query_price_availability,
+            select_main_product)
 
         logger.trace("Attempting pure Python metadata extraction (no lxml)")
         extracted_data = extract_metadata_pure_python(html_content)
-        main_product = select_main_product(extracted_data.get('json-ld', []), url=url) if url else None
+        main_product = select_main_product(
+            extracted_data.get('json-ld', []), url=url,
+            identity_v2=IDENTITY_V2) if url else None
         price_data = query_price_availability(
             extracted_data, url=url, main_product=main_product)
         pure_price_data = price_data or {}
