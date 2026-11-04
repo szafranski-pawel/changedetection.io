@@ -163,7 +163,7 @@ class TestRestockProductScope(unittest.TestCase):
         with self.assertRaises(restock_diff.MoreThanOnePriceFound):
             extruct(html, url)
 
-    def test_multiple_unmatched_jsonld_products_with_same_price_are_used(self):
+    def test_multiple_unmatched_jsonld_products_with_same_price_are_ambiguous(self):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "A",
@@ -178,12 +178,56 @@ class TestRestockProductScope(unittest.TestCase):
         </body></html>"""
 
         url = 'https://shop.example/product/foo'
-        self.assertEqual(extract(html, url).get('price'), 10.0)
-        self.assertEqual(extract(html, url).get('availability'), 'instock')
-        self.assertEqual(pure(html, url).get('price'), 10.0)
-        self.assertEqual(extruct(html, url).get('price'), 10.0)
+        self.assertIsNone(extract(html, url).get('price'))
+        self.assertIsNone(pure(html, url).get('price'))
+        self.assertIsNone(extruct(html, url).get('price'))
 
-    def test_itemlist_with_only_product_is_used(self):
+    def test_single_recommendation_with_url_is_rejected(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Recommendation",
+         "url": "https://shop.example/product/other-999",
+         "offers": {"@type": "Offer", "price": "9.99", "priceCurrency": "USD",
+                    "availability": "https://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-123'
+        self.assertIsNone(extract(html, url).get('price'))
+        self.assertIsNone(pure(html, url).get('price'))
+
+    def test_anonymous_single_top_level_product_is_used(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
+                    "availability": "https://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-123'
+        self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertEqual(pure(html, url).get('price'), 10.0)
+
+    def test_same_variant_value_different_path_is_rejected(self):
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+         "offers": {"@type": "Offer", "price": "100",
+                    "availability": "https://schema.org/InStock"}}
+        </script>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product", "name": "Rec",
+         "url": "https://shop.example/product/B?variant=red",
+         "offers": {"@type": "Offer", "price": "10",
+                    "availability": "https://schema.org/InStock"}}
+        </script>
+        </body></html>"""
+
+        url = 'https://shop.example/product/A?variant=red'
+        self.assertNotEqual(extract(html, url).get('price'), 10.0)
+
+    def test_itemlist_with_only_product_requires_identity(self):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "ItemList",
@@ -194,10 +238,9 @@ class TestRestockProductScope(unittest.TestCase):
         </body></html>"""
 
         url = 'https://shop.example/product/black-dress'
-        self.assertEqual(extract(html, url).get('price'), 10.0)
-        self.assertEqual(extract(html, url).get('availability'), 'instock')
-        self.assertEqual(pure(html, url).get('price'), 10.0)
-        self.assertEqual(extruct(html, url).get('price'), 10.0)
+        self.assertIsNone(extract(html, url).get('price'))
+        self.assertIsNone(pure(html, url).get('price'))
+        self.assertIsNone(extruct(html, url).get('price'))
 
     def test_itemlist_recommendations_are_not_treated_as_top_level(self):
         html = """<html><body>
@@ -225,8 +268,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(extruct(html, with_sku_url).get('price'), 10.0)
 
         without_token_url = 'https://shop.example/product/foo'
-        without_token = extract(html, without_token_url)
-        self.assertEqual(without_token.get('price'), 10.0)
+        self.assertEqual(extract(html, without_token_url).get('price'), 10.0)
         self.assertEqual(pure(html, without_token_url).get('price'), 10.0)
         self.assertEqual(extruct(html, without_token_url).get('price'), 10.0)
 
@@ -462,21 +504,18 @@ class TestRestockProductScope(unittest.TestCase):
         other = main.replace('"name": "Main",', '"name": "Other",').replace(
             'main-MAIN123.html', 'other-OTHER999.html')
         self.assertIsNone(pure(other, url).get('price'))
-        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extract(other, url)
-        with self.assertRaises(restock_diff.MoreThanOnePriceFound):
-            extruct(other, url)
+        self.assertIsNone(extract(other, url).get('price'))
+        self.assertIsNone(extruct(other, url).get('price'))
 
-        # A single top-level product is still the only candidate.
+        # A single unverified top-level product is not enough identity evidence.
         sku_only = """<html><body><script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "Other",
          "sku": "OTHER999", "offers": {"@type": "Offer", "price": "10"}}
         </script></body></html>"""
-        self.assertEqual(extract(sku_only, url).get('price'), 10.0)
+        self.assertIsNone(extract(sku_only, url).get('price'))
 
-        # GTIN/MPN never appear in URLs, but they do not contradict one either.
         gtin_only = sku_only.replace('"sku": "OTHER999"', '"gtin13": "1234567890123"')
-        self.assertEqual(extract(gtin_only, url).get('price'), 10.0)
+        self.assertIsNone(extract(gtin_only, url).get('price'))
 
     def test_tied_url_match_is_refused(self):
         html = """<html><body>
@@ -1891,7 +1930,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(extract(html, url).get('price'), 10.0)
         self.assertEqual(extract(html, url).get('availability'), 'instock')
 
-    def test_multi_offer_default_keeps_explicit_null_stock(self):
+    def test_multi_offer_default_drops_conflicting_stock(self):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "Main",
@@ -1908,7 +1947,7 @@ class TestRestockProductScope(unittest.TestCase):
         url = 'https://shop.example/products/main'
         value = extract(html, url)
         self.assertEqual(value.get('price'), 20.0)
-        self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertIsNone(value.get('availability'))
 
     def test_legacy_split_microdata_price_keeps_integer_part(self):
         html = """<html><body>
@@ -2310,7 +2349,7 @@ class TestRestockProductScope(unittest.TestCase):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "ProductGroup",
-         "productGroupID": "G1", "hasVariant": [
+         "productGroupID": "G1", "url": "https://shop.example/products/g1", "hasVariant": [
           {"@type": "Product", "sku": "G1-A",
            "offers": {"@type": "Offer", "price": "null", "priceCurrency": "PLN",
                       "availability": "https://schema.org/OutOfStock"}},
@@ -2381,7 +2420,7 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(extract(html, url).get('price'), 49.99)
         self.assertEqual(pure(html, url).get('price'), 49.99)
 
-    def test_availability_and_currency_follow_agreeing_price(self):
+    def test_same_price_offers_drop_conflicting_stock(self):
         html = """<html><body>
         <script type="application/ld+json">
         {"@context": "https://schema.org", "@type": "Product", "name": "Main",
@@ -2396,7 +2435,7 @@ class TestRestockProductScope(unittest.TestCase):
         url = 'https://shop.example/product/main-MAIN123.html'
         value = extract(html, url)
         self.assertEqual(value.get('price'), 10.0)
-        self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertIsNone(value.get('availability'))
 
     def test_nested_microdata_price_is_not_truncated(self):
         html = """<html><body>
@@ -2608,18 +2647,20 @@ class TestRestockProductScope(unittest.TestCase):
     def test_same_price_products_do_not_mix_availability(self):
         html = """<html><body>
         <script type="application/ld+json">
-        {"@context": "https://schema.org", "@type": "Product", "name": "Carousel",
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/same",
          "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
                     "availability": "https://schema.org/InStock"}}
         </script>
         <script type="application/ld+json">
-        {"@context": "https://schema.org", "@type": "Product", "name": "Main",
+        {"@context": "https://schema.org", "@type": "Product", "name": "Same",
+         "url": "https://shop.example/products/same",
          "offers": {"@type": "Offer", "price": "10", "priceCurrency": "PLN",
                     "availability": "https://schema.org/OutOfStock"}}
         </script>
         </body></html>"""
 
-        url = 'https://shop.example/collections/spring'
+        url = 'https://shop.example/products/same'
         value = extract(html, url)
         self.assertEqual(value.get('price'), 10.0)
         self.assertIsNone(value.get('availability'))

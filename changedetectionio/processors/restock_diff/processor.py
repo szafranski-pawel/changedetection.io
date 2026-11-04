@@ -165,6 +165,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
     top_level_products = [product for product, top_level
                           in _collect_product_candidates(data.get('json-ld', []))
                           if top_level]
+    if any(has_conflicting_product_prices(product) for product in top_level_products):
+        raise MoreThanOnePriceFound()
     if len(top_level_products) > 1:
         consensus, conflict = top_level_product_consensus(top_level_products, url=url)
         if conflict:
@@ -189,7 +191,8 @@ def _scoped_get_itemprop_availability_with_provenance(data, url):
                 product_offer_data(offers[0]), og_data,
                 fill_price=not has_explicit_missing_price(offers[0]))), False
 
-    microdata_item = select_microdata_product(product_items, url=url)
+    microdata_item = select_microdata_product(
+        product_items, url=url, allow_anonymous=not top_level_products)
     if microdata_item:
         if has_conflicting_microdata_prices(microdata_item):
             raise MoreThanOnePriceFound()

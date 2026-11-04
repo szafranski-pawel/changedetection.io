@@ -352,11 +352,12 @@ def _variant_match_score(variant, url):
         if len(normalized) < 3:
             continue
         key_tokens = set(_key_tokens(key))
+        has_digit = any(char.isdigit() for char in normalized)
         if normalized in variant_values or normalized in product_values:
             best = max(best, len(normalized))
-        elif key_tokens <= last_tokens:
+        elif has_digit and key_tokens <= last_tokens:
             best = max(best, len(normalized))
-        elif len(key_tokens) > 1 and normalized in _last:
+        elif has_digit and len(key_tokens) > 1 and normalized in _last:
             best = max(best, len(normalized))
     return best
 
@@ -409,7 +410,8 @@ def _offer_matches_watch(offer, url):
 def _product_has_watch_offer(product, url):
     watch_identity = _url_identity(url)
     for key in (_ci_get(product, 'url'), _ci_get(product, '@id')):
-        if key and _identities_match(watch_identity, _url_identity(key)):
+        if (key and _same_path_host(url, key)
+                and _identities_match(watch_identity, _url_identity(key))):
             return True
     for offer in _as_list(_ci_get(product, 'offers')):
         if isinstance(offer, dict) and _offer_matches_watch(offer, url):
@@ -520,6 +522,17 @@ def _exact_url_match(product, url):
         return False
     watch_path = urlparse(str(url)).path.rstrip('/').casefold()
     return bool(watch_path and _product_url_path(product) == watch_path)
+
+
+def _product_identity_confirmed(product, url):
+    if not url:
+        return True
+    watch_tokens = watch_url_product_keys(url, include_variant=True)
+    if not watch_tokens or not _product_keys(product):
+        return True
+    return (_exact_url_match(product, url)
+            or _match_product_score(product, watch_tokens) > 0
+            or _product_has_watch_offer(product, url))
 
 
 def _product_identity(product):
@@ -672,8 +685,8 @@ def product_offer_data(product):
         currencies = [entry[1] for entry in offers if entry[1]]
         availabilities = [entry[2] for entry in offers if entry[2]]
         price = _consensus(prices)
-        currency = _consensus(currencies, first_wins=True)
-        availability = _consensus(availabilities, first_wins=True)
+        currency = _consensus(currencies)
+        availability = _consensus(availabilities)
 
     if price is None:
         price = _single_price(_ci_get(product, 'price'))
@@ -792,7 +805,23 @@ def top_level_product_consensus(products, offers_mode=False, url=None):
                 if path in priced_paths:
                     continue
                 return {}, False
+            products = [product for product, data in zip(products, values)
+                        if data.get('price') is not None]
             values = [data for data in values if data.get('price') is not None]
+        identities = []
+        for product in products:
+            identity = _product_identity(product)
+            if identity[1]:
+                identities.append(identity)
+                continue
+            strong = tuple(sorted(_product_strong_keys(product)))
+            if not strong:
+                return {}, False
+            identities.append((identity[0], strong))
+        if len(set(identities)) > 1:
+            identity_prices = {data.get('price') for data in values
+                               if data.get('price') is not None}
+            return ({}, True) if len(identity_prices) > 1 else ({}, False)
     prices = {data.get('price') for data in values if data.get('price') is not None}
     if len(prices) > 1:
         return {}, True
@@ -926,10 +955,15 @@ def select_main_product(jsonld_blocks, url=None):
 
     top_level_products = [product for product, top_level in candidates if top_level]
     if not top_level_products and len(candidates) == 1:
-        return candidates[0][0]
+        product = candidates[0][0]
+        if (not _product_keys(product)
+                or not watch_url_product_keys(url, include_variant=True)):
+            return None
+        return product if _product_identity_confirmed(product, url) else None
     top_level_products = _collapse_duplicate_products(top_level_products, url=url)
     if len(top_level_products) == 1:
-        return top_level_products[0]
+        product = top_level_products[0]
+        return product if _product_identity_confirmed(product, url) else None
     return None
 
 
@@ -961,7 +995,7 @@ def _microdata_item_url_keys(item):
     return keys
 
 
-def select_microdata_product(items, url=None, jsonld_product=None):
+def select_microdata_product(items, url=None, jsonld_product=None, allow_anonymous=False):
     """Select the microdata Product matching the watched URL or JSON-LD product."""
     candidates = [item for item in (items or [])
                   if 'product' in microdata_item_types(item)
@@ -1033,7 +1067,7 @@ def select_microdata_product(items, url=None, jsonld_product=None):
                 return None
 
         if not isinstance(jsonld_product, dict):
-            if len(candidates) == 1:
+            if allow_anonymous and len(candidates) == 1:
                 keys = _microdata_item_keys(candidates[0])
                 if not any(_has_significant_tokens(key) for key in keys):
                     return candidates[0]
@@ -1058,7 +1092,7 @@ def select_microdata_product(items, url=None, jsonld_product=None):
             return named[0] if len(named) == 1 else None
         return None
 
-    return candidates[0] if len(candidates) == 1 else None
+    return candidates[0] if allow_anonymous and len(candidates) == 1 else None
 
 
 def _scope_key_matches(key, url):
@@ -1110,7 +1144,7 @@ def _strong_keys_match(strong_keys, url_keys, url):
     return not any(_has_significant_tokens(key) for key in strong_keys)
 
 
-def _select_microdata_scope(microdata, url, main_product):
+def _select_microdata_scope(microdata, url, main_product, allow_anonymous=False):
     """Return the single pure-Python Product scope matching the main product."""
     scopes = microdata.get('product_scopes_data') or []
     if len(scopes) != 1:
@@ -1128,7 +1162,7 @@ def _select_microdata_scope(microdata, url, main_product):
         return None
     if any(_scope_key_matches(key, url) for key in keys):
         return scope
-    if not main_product:
+    if not main_product and allow_anonymous:
         return scope
     names = [_normalize_name(value) for value in scope.get('product_names', [])
              if _normalize_name(value)]
@@ -1754,6 +1788,8 @@ def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
     top_level_products = [product for product, top_level
                           in _collect_product_candidates(extracted_data.get('json-ld', []))
                           if top_level]
+    if any(has_conflicting_product_prices(product) for product in top_level_products):
+        return {}
     if len(top_level_products) > 1:
         result, conflict = top_level_product_consensus(top_level_products, url=url)
         if conflict:
@@ -1778,10 +1814,9 @@ def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
     if scopes > 1:
         return {}
     if scopes == 1:
-        scope = _select_microdata_scope(microdata, url, None)
-        if scope is None:
-            return {}
-        microdata = scope
+        scope = _select_microdata_scope(
+            microdata, url, None, allow_anonymous=not top_level_products)
+        microdata = scope or {}
     if scopes == 1 and url:
         keys = list(microdata.get('product_keys', []))
         url_tokens = watch_url_product_keys(url)
