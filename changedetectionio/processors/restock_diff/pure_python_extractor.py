@@ -150,6 +150,71 @@ _TRAILING_ROUTE = re.compile(
     r'^(?:reviews?|ratings?|comments?|page(?:[-_]?\d+)?|details?|specs?|'
     r'description|questions?|gallery)$', re.IGNORECASE)
 
+_TRACKING_PREFIXES = ('utm_', 'pk_', 'mtm_', 'hsa_', 'oly_', 'vero_')
+_TRACKING_KEYS = {
+    '_ga', '_gl', 'dclid', 'fbclid', 'gclid', 'igshid', 'mc_cid', 'mc_eid',
+    'msclkid', 'ttclid', 'twclid', 'yclid',
+}
+_VARIANT_KEYS = {'variant', 'variantid', 'variant_id'}
+_PRODUCT_KEYS = {'id', 'sku', 'pid', 'productid', 'product_id'}
+
+
+def _query_class(key):
+    key_lower = key.casefold()
+    if key_lower.startswith(_TRACKING_PREFIXES) or key_lower in _TRACKING_KEYS:
+        return 'tracking'
+    if key_lower in _VARIANT_KEYS or key_lower in _PRODUCT_KEYS:
+        return 'identity'
+    if key_lower.startswith('dwvar_'):
+        return 'identity'
+    return 'unknown'
+
+
+def _canonical_url_parts(url):
+    """One normalized view of a product URL.
+
+    Tracking parameters disappear. Identity parameters and unknown parameters
+    both remain comparable; unknown params are deliberately not discarded
+    because they can distinguish variants (size, colour, capacity).
+    """
+    parsed = urlparse(str(url))
+    segments = [unquote(segment) for segment in parsed.path.split('/') if segment]
+    if segments:
+        segments[-1] = re.sub(
+            r'\.(?:html?|php|aspx?)$', '', segments[-1], flags=re.IGNORECASE)
+    path = '/' + '/'.join(segment.casefold() for segment in segments) if segments else ''
+    last_segment = segments[-1].casefold() if segments else ''
+
+    query = {'tracking': {}, 'identity': {}, 'unknown': {}}
+    variant_values = set()
+    product_values = set()
+    for key, entries in parse_qs(parsed.query, keep_blank_values=True).items():
+        kind = _query_class(key)
+        query[kind][key.casefold()] = entries
+        if kind != 'identity':
+            continue
+        key_lower = key.casefold()
+        for entry in entries:
+            normalized = re.sub(r'[^a-z0-9]+', '', entry.casefold())
+            if not normalized:
+                continue
+            if key_lower in _VARIANT_KEYS:
+                variant_values.add(normalized)
+            elif key_lower in _PRODUCT_KEYS:
+                product_values.add(normalized)
+            elif key_lower.startswith('dwvar_'):
+                product_values.add(re.sub(
+                    r'[^a-z0-9]+', '', key_lower[len('dwvar_'):].split('_')[0]))
+
+    return {
+        'host': parsed.netloc.casefold().removeprefix('www.'),
+        'path': path,
+        'last_segment': last_segment,
+        'query': query,
+        'variant_values': variant_values,
+        'product_values': product_values,
+    }
+
 
 def watch_url_product_keys(url, include_variant=False):
     """Return product-code-like tokens from the watch URL.
@@ -164,37 +229,34 @@ def watch_url_product_keys(url, include_variant=False):
     if not url:
         return set()
 
-    parsed = urlparse(url)
+    parts = _canonical_url_parts(url)
     tokens = set()
     fallback_tokens = set()
 
     def add(value):
         tokens.update(_significant_tokens(value))
 
-    for key, values in parse_qs(parsed.query).items():
-        key_lower = key.casefold()
-        if key_lower in ('pid', 'productid', 'product_id', 'sku'):
+    for key, values in parts['query']['identity'].items():
+        if key in ('pid', 'productid', 'product_id', 'sku'):
             for value in values:
                 add(value)
-        elif key_lower.startswith('dwvar_'):
+        elif key.startswith('dwvar_'):
             add(key[len('dwvar_'):].split('_')[0])
-        elif key_lower in ('variant', 'variantid', 'variant_id', 'id'):
+        elif key in ('variant', 'variantid', 'variant_id', 'id'):
             for value in values:
                 fallback_tokens.update(_significant_tokens(value))
 
-    path = parsed.path.rstrip('/')
-    segments = [unquote(segment) for segment in path.split('/') if segment]
+    path = parts['path'].lstrip('/')
+    segments = [segment for segment in path.split('/') if segment]
     if segments:
         index = len(segments) - 1
         while index >= 0:
-            segment = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[index],
-                             flags=re.IGNORECASE)
+            segment = segments[index]
             if _TRAILING_ROUTE.match(segment):
                 index -= 1
                 continue
             if segment.isdigit() and index > 0:
-                previous = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[index - 1],
-                                  flags=re.IGNORECASE)
+                previous = segments[index - 1]
                 if _TRAILING_ROUTE.match(previous):
                     index -= 1
                     continue
@@ -202,13 +264,12 @@ def watch_url_product_keys(url, include_variant=False):
         if index >= 0:
             add(segments[index])
             if index > 0:
-                previous = re.sub(r'\.(?:html?|php|aspx?)$', '', segments[index - 1],
-                                  flags=re.IGNORECASE)
+                previous = segments[index - 1]
                 if not previous.isdigit():
                     add(previous)
                 elif (index > 1
                       and not segments[index].isdigit()
-                      and segments[index - 2].casefold() in (
+                      and segments[index - 2] in (
                           'p', 'product', 'products', 'dp')):
                     add(previous)
 
@@ -285,23 +346,9 @@ def _microdata_name_matches(main_name, names):
 
 def _url_identity(url):
     """Return (last-path-segment code, variant values, product-id values)."""
-    parsed = urlparse(str(url))
-    last = re.sub(r'[^a-z0-9]+', '', _last_segment(url).casefold())
-    variant_values = set()
-    product_values = set()
-    for key, entries in parse_qs(parsed.query).items():
-        key_lower = key.casefold()
-        if key_lower in ('variant', 'variantid', 'variant_id'):
-            target = variant_values
-        elif key_lower in ('id', 'sku', 'pid', 'productid', 'product_id'):
-            target = product_values
-        else:
-            continue
-        for entry in entries:
-            normalized = re.sub(r'[^a-z0-9]+', '', entry.casefold())
-            if normalized:
-                target.add(normalized)
-    return last, variant_values, product_values
+    parts = _canonical_url_parts(url)
+    last = re.sub(r'[^a-z0-9]+', '', parts['last_segment'])
+    return last, set(parts['variant_values']), set(parts['product_values'])
 
 
 def _identities_match(watch, other):
@@ -317,21 +364,16 @@ def _identities_match(watch, other):
 
 
 def _last_segment(url):
-    parsed = urlparse(str(url))
-    segments = [unquote(segment) for segment in parsed.path.rstrip('/').split('/') if segment]
-    if not segments:
-        return ''
-    return re.sub(r'\.(?:html?|php|aspx?)$', '', segments[-1], flags=re.IGNORECASE)
+    return _canonical_url_parts(url)['last_segment']
 
 
 def _same_path_host(left, right):
-    left_parsed = urlparse(str(left))
-    right_parsed = urlparse(str(right))
-    left_host = left_parsed.netloc.casefold().removeprefix('www.')
-    right_host = right_parsed.netloc.casefold().removeprefix('www.')
-    if left_host and right_host and left_host != right_host:
+    left_parts = _canonical_url_parts(left)
+    right_parts = _canonical_url_parts(right)
+    if (left_parts['host'] and right_parts['host']
+            and left_parts['host'] != right_parts['host']):
         return False
-    return _last_segment(left).casefold() == _last_segment(right).casefold()
+    return left_parts['last_segment'] == right_parts['last_segment']
 
 
 def _variant_match_score(variant, url):
@@ -440,11 +482,14 @@ def _select_offer_by_url(product, url):
     offer_has_identity = any(
         _url_identity(offer_url)[1] or _url_identity(offer_url)[2]
         for offer_url in offer_urls if offer_url)
-    watch_query_keys = set(parse_qs(urlparse(str(url)).query))
+    watch_query = _canonical_url_parts(url)['query']
+    watch_query_keys = set(watch_query['identity']) | set(watch_query['unknown'])
     offer_query_keys = set()
     for offer_url in offer_urls:
         if offer_url:
-            offer_query_keys.update(parse_qs(urlparse(str(offer_url)).query))
+            offer_query = _canonical_url_parts(offer_url)['query']
+            offer_query_keys.update(offer_query['identity'])
+            offer_query_keys.update(offer_query['unknown'])
     query_conflict = bool(watch_query_keys & offer_query_keys)
     if (not query_conflict
             and not watch_variants and not watch_products
@@ -514,13 +559,13 @@ def _match_product_score(product, url_tokens):
 
 def _product_url_path(product):
     value = _ci_get(product, 'url') or _ci_get(product, '@id')
-    return urlparse(str(value)).path.rstrip('/').casefold() if isinstance(value, str) else ''
+    return _canonical_url_parts(value)['path'] if isinstance(value, str) else ''
 
 
 def _exact_url_match(product, url):
     if not url:
         return False
-    watch_path = urlparse(str(url)).path.rstrip('/').casefold()
+    watch_path = _canonical_url_parts(url)['path']
     return bool(watch_path and _product_url_path(product) == watch_path)
 
 
@@ -538,13 +583,16 @@ def _product_identity_confirmed(product, url):
 def _product_identity(product):
     name = _normalize_name(_ci_get(product, 'name'))
     url = _ci_get(product, 'url') or _ci_get(product, '@id')
-    parsed = urlparse(str(url)) if isinstance(url, str) else None
-    path = parsed.path.rstrip('/') if parsed else ''
+    if not isinstance(url, str):
+        return name, '', ()
+    parts = _canonical_url_parts(url)
     query = tuple(sorted(
-        (key.casefold(), value)
-        for key, values in parse_qs(parsed.query).items() for value in values
-    )) if parsed else ()
-    return name, path, query
+        (kind, key, value)
+        for kind in ('identity', 'unknown')
+        for key, values in parts['query'][kind].items()
+        for value in values
+    ))
+    return name, parts['path'], query
 
 
 def _collect_product_candidates(jsonld_blocks):
@@ -1100,25 +1148,23 @@ def _scope_key_matches(key, url):
         return (_same_path_host(url, key)
                 and _identities_match(_url_identity(url), _url_identity(key)))
     watch_tokens = set(watch_url_product_keys(url, include_variant=True))
+    parts = _canonical_url_parts(url)
     query_tokens = set()
-    for name, entries in parse_qs(urlparse(str(url)).query).items():
-        if name.casefold() in ('variant', 'variantid', 'variant_id', 'id',
-                               'sku', 'pid', 'productid', 'product_id'):
-            for entry in entries:
-                query_tokens.update(_key_tokens(entry))
-    last_tokens = set(_key_tokens(_last_segment(url)))
+    for entries in parts['query']['identity'].values():
+        for entry in entries:
+            query_tokens.update(_key_tokens(entry))
+    last_tokens = set(_key_tokens(parts['last_segment']))
     key_tokens = set(_key_tokens(key))
     return bool(key_tokens) and key_tokens <= (last_tokens | watch_tokens | query_tokens)
 
 
 def _strong_keys_match(strong_keys, url_keys, url):
-    watch_tokens = set(_key_tokens(_last_segment(url)))
+    parts = _canonical_url_parts(url)
+    watch_tokens = set(_key_tokens(parts['last_segment']))
     watch_tokens.update(watch_url_product_keys(url, include_variant=True))
-    for name, entries in parse_qs(urlparse(str(url)).query).items():
-        if name.casefold() in ('variant', 'variantid', 'variant_id', 'id',
-                               'sku', 'pid', 'productid', 'product_id'):
-            for entry in entries:
-                watch_tokens.update(_key_tokens(entry))
+    for entries in parts['query']['identity'].values():
+        for entry in entries:
+            watch_tokens.update(_key_tokens(entry))
 
     def tokens_for(key):
         if '/' in key:
