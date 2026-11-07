@@ -23,6 +23,7 @@ from . import MISSING_STRINGS, Restock
 
 _UNSET = object()
 IDENTITY_V2 = os.environ.get('RESTOCK_IDENTITY_V2') == '1'
+IDENTITY_SHADOW = os.environ.get('RESTOCK_IDENTITY_SHADOW') == '1'
 _VOID_TAGS = {
     'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
     'link', 'meta', 'param', 'source', 'track', 'wbr',
@@ -1198,6 +1199,37 @@ def select_main_product(jsonld_blocks, url=None, resolve_graph=False, identity_v
     return None
 
 
+def _shadow_signature(product):
+    if not isinstance(product, dict):
+        return None
+    return {
+        'type': _jsonld_types(product),
+        'name': _normalize_name(_ci_get(product, 'name')),
+        'identity': _product_identity(product),
+        'offer': product_offer_data(product),
+    }
+
+
+def select_main_product_for_processing(jsonld_blocks, url=None):
+    """Return the authoritative selection and optionally shadow-log v2."""
+    if IDENTITY_V2 and not IDENTITY_SHADOW:
+        return select_main_product_v2(jsonld_blocks, url=url)
+
+    selected = select_main_product(jsonld_blocks, url=url)
+    if IDENTITY_SHADOW:
+        try:
+            shadow = select_main_product_v2(jsonld_blocks, url=url)
+            shadow_signature = _shadow_signature(shadow)
+        except Exception as exc:
+            shadow_signature = f'error:{type(exc).__name__}'
+        selected_signature = _shadow_signature(selected)
+        if selected_signature != shadow_signature:
+            logger.warning(
+                f"Identity shadow difference url={url} "
+                f"old={selected_signature!r} v2={shadow_signature!r}")
+    return selected
+
+
 def microdata_item_types(item):
     return _type_names(item.get('type'))
 
@@ -1942,8 +1974,8 @@ def _legacy_query_price_availability(extracted_data):
 def _query_price_availability_scoped(extracted_data, url, main_product=_UNSET):
     """Product-scoped extraction: select one product, then use only its values."""
     if main_product is _UNSET:
-        main_product = select_main_product(
-            extracted_data.get('json-ld', []), url=url, identity_v2=IDENTITY_V2)
+        main_product = select_main_product_for_processing(
+            extracted_data.get('json-ld', []), url=url)
     og_data = extracted_data.get('opengraph', {}) or {}
 
     if main_product:
