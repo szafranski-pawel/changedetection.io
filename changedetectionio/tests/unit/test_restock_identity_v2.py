@@ -117,7 +117,7 @@ def test_shadow_mode_returns_old_and_logs_difference():
     messages, sink_id = _capture_shadow_logs()
 
     try:
-        with patch.object(pure, 'IDENTITY_V2', False), \
+        with patch.object(pure, 'IDENTITY_LEGACY', False), \
                 patch.object(pure, 'IDENTITY_SHADOW', True), \
                 patch.object(pure, 'select_main_product', return_value=old), \
                 patch.object(pure, 'select_main_product_v2', return_value=new):
@@ -136,7 +136,7 @@ def test_shadow_mode_does_not_log_when_equal():
     messages, sink_id = _capture_shadow_logs()
 
     try:
-        with patch.object(pure, 'IDENTITY_V2', False), \
+        with patch.object(pure, 'IDENTITY_LEGACY', False), \
                 patch.object(pure, 'IDENTITY_SHADOW', True), \
                 patch.object(pure, 'select_main_product', return_value=product), \
                 patch.object(pure, 'select_main_product_v2', return_value=product):
@@ -150,11 +150,11 @@ def test_shadow_mode_does_not_log_when_equal():
                    for message in messages)
 
 
-def test_v2_authoritative_when_enabled():
+def test_v2_is_default():
     old = {'@type': 'Product', 'name': 'Old'}
     new = {'@type': 'Product', 'name': 'New'}
 
-    with patch.object(pure, 'IDENTITY_V2', True), \
+    with patch.object(pure, 'IDENTITY_LEGACY', False), \
             patch.object(pure, 'IDENTITY_SHADOW', False), \
             patch.object(pure, 'select_main_product', return_value=old), \
             patch.object(pure, 'select_main_product_v2', return_value=new):
@@ -162,6 +162,20 @@ def test_v2_authoritative_when_enabled():
             [], 'https://shop.example/product/main')
 
     assert selected is new
+
+
+def test_legacy_flag_returns_old():
+    old = {'@type': 'Product', 'name': 'Old'}
+    new = {'@type': 'Product', 'name': 'New'}
+
+    with patch.object(pure, 'IDENTITY_LEGACY', True), \
+            patch.object(pure, 'IDENTITY_SHADOW', False), \
+            patch.object(pure, 'select_main_product', return_value=old), \
+            patch.object(pure, 'select_main_product_v2', return_value=new):
+        selected = select_main_product_for_processing(
+            [], 'https://shop.example/product/main')
+
+    assert selected is old
 
 
 def test_v2_duplicate_graph_id_refuses():

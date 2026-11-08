@@ -22,7 +22,9 @@ from loguru import logger
 from . import MISSING_STRINGS, Restock
 
 _UNSET = object()
-IDENTITY_V2 = os.environ.get('RESTOCK_IDENTITY_V2') == '1'
+# Role-aware selection is the default; legacy is the rollback switch and
+# shadow keeps legacy authoritative while logging v2 differences.
+IDENTITY_LEGACY = os.environ.get('RESTOCK_IDENTITY_LEGACY') == '1'
 IDENTITY_SHADOW = os.environ.get('RESTOCK_IDENTITY_SHADOW') == '1'
 _VOID_TAGS = {
     'area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input',
@@ -1011,6 +1013,12 @@ def _v2_strong_keys(product, role):
     keys = []
     for name in names:
         keys.extend(_string_values(_ci_get(product, name)))
+    if role == 'group':
+        for variant in _as_list(_ci_get(product, 'hasVariant')):
+            if not isinstance(variant, dict):
+                continue
+            for name in ('sku', 'productID'):
+                keys.extend(_string_values(_ci_get(variant, name)))
     return keys
 
 
@@ -1018,37 +1026,47 @@ def _v2_candidates(jsonld_blocks):
     candidates = _collect_product_candidates(jsonld_blocks)
     parents = {}
 
-    def walk(value):
-        if isinstance(value, list):
-            for entry in value:
-                walk(entry)
-            return
-        if not isinstance(value, dict):
-            return
-        for variant in _as_list(_ci_get(value, 'hasVariant')):
-            if isinstance(variant, dict):
-                parents[id(variant)] = value
-        for child in value.values():
-            walk(child)
+    def same_node(left, right):
+        for key in ('@id', 'url'):
+            left_value = _ci_get(left, key)
+            right_value = _ci_get(right, key)
+            if isinstance(left_value, str) and isinstance(right_value, str):
+                return left_value == right_value
+        return left is right
 
-    for block in jsonld_blocks:
-        walk(block)
-    for product, _top_level in candidates:
+    top_level = [product for product, is_top in candidates if is_top]
+    for product in top_level:
+        for variant in _as_list(_ci_get(product, 'hasVariant')):
+            if isinstance(variant, dict):
+                parents[id(variant)] = product
+
+    # isVariantOf only links a variant to a top-level parent; a nested
+    # recommendation must not become a variant of the main product.
+    for product, _is_top in candidates:
         parent = _ci_get(product, 'isVariantOf')
-        if isinstance(parent, dict):
-            parents.setdefault(id(product), parent)
+        if not isinstance(parent, dict):
+            continue
+        for candidate in top_level:
+            if candidate is not product and same_node(candidate, parent):
+                parents.setdefault(id(product), candidate)
+                break
 
     products = []
     groups = []
     variants = []
-    for product, _top_level in candidates:
+    ordered = []
+    for product, is_top in candidates:
         if id(product) in parents:
+            role = 'variant'
             variants.append((parents[id(product)], product))
         elif _has_variants(product) or 'productgroup' in _jsonld_types(product):
-            groups.append(product)
+            role = 'group'
+            groups.append((product, is_top))
         else:
-            products.append(product)
-    return products, groups, variants
+            role = 'product'
+            products.append((product, is_top))
+        ordered.append((product, is_top, role))
+    return products, groups, variants, ordered
 
 
 def select_main_product_v2(jsonld_blocks, url=None):
@@ -1056,9 +1074,15 @@ def select_main_product_v2(jsonld_blocks, url=None):
     blocks, conflict = _resolve_jsonld_graph(jsonld_blocks or [], base_url=url)
     if conflict:
         return None
-    products, groups, variants = _v2_candidates(blocks)
-    products = [_select_offer_by_url(product, url) for product in products]
-    groups = [_select_offer_by_url(group, url) for group in groups]
+    products, groups, variants, ordered = _v2_candidates(blocks)
+    products = [(_select_offer_by_url(product, url), is_top)
+                for product, is_top in products]
+    groups = [(_select_offer_by_url(product, url), is_top)
+              for product, is_top in groups]
+    ordered = [(_select_offer_by_url(product, url), is_top, role)
+               for product, is_top, role in ordered]
+    variants = [(_select_offer_by_url(parent, url), variant)
+                for parent, variant in variants]
     watch_tokens = watch_url_product_keys(url, include_variant=True)
 
     matches = []
@@ -1073,40 +1097,62 @@ def select_main_product_v2(jsonld_blocks, url=None):
             return _variant_with_parent(best[0][1], best[0][2], url=url)
         return None
 
-    top = products + groups
+    top = [product for product, _is_top, role in ordered
+           if role != 'variant']
     exact = [product for product in top if _exact_url_match(product, url)]
     if exact:
+        if len(exact) > 1:
+            keyed = [product for product in exact
+                     if _match_keys_score(_product_keys(product), watch_tokens) > 0]
+            if len(keyed) == 1:
+                return keyed[0]
         collapsed = _collapse_duplicate_products(exact, url=url)
         return collapsed[0] if len(collapsed) == 1 else None
 
-    for role, items in (('group', groups), ('product', products)):
-        scored = []
-        for item in items:
-            score = _match_keys_score(_v2_strong_keys(item, role), watch_tokens)
-            if score:
-                scored.append((score, item))
-        if not scored:
-            continue
-        best_score = max(entry[0] for entry in scored)
-        best = [entry[1] for entry in scored if entry[0] == best_score]
-        if len(best) == 1:
-            return best[0]
-        collapsed = _collapse_duplicate_products(best, url=url)
-        return collapsed[0] if len(collapsed) == 1 else None
+    for top_only in (True, False):
+        for role, items in (
+                ('group', [(product, is_top) for product, is_top in groups
+                           if is_top == top_only]),
+                ('product', [(product, is_top) for product, is_top in products
+                             if is_top == top_only])):
+            scored = []
+            for item, _is_top in items:
+                score = _match_keys_score(_v2_strong_keys(item, role), watch_tokens)
+                if score:
+                    scored.append((score, item))
+            if not scored:
+                continue
+            best_score = max(entry[0] for entry in scored)
+            best = [entry[1] for entry in scored if entry[0] == best_score]
+            if len(best) == 1:
+                return best[0]
+            collapsed = _collapse_duplicate_products(best, url=url)
+            return collapsed[0] if len(collapsed) == 1 else None
 
-    collapsed = _collapse_duplicate_products(top, url=url)
-    if len(collapsed) != 1:
-        return None
-    product = collapsed[0]
-    if not watch_tokens or not _product_keys(product):
-        return product
-    return product if _product_identity_confirmed(product, url) else None
+    top_level_products = [product for product, is_top, role in ordered
+                          if is_top and role != 'variant']
+    if top_level_products:
+        collapsed = _collapse_duplicate_products(top_level_products, url=url)
+        if len(collapsed) != 1:
+            return None
+        product = collapsed[0]
+        if not watch_tokens or not _product_keys(product):
+            return product
+        return product if _product_identity_confirmed(product, url) else None
+
+    all_products = [product for product, _is_top, role in ordered
+                    if role != 'variant']
+    if len(all_products) == 1:
+        product = all_products[0]
+        if (not _product_keys(product)
+                or not watch_url_product_keys(url, include_variant=True)):
+            return None
+        return product if _product_identity_confirmed(product, url) else None
+    return None
 
 
-def select_main_product(jsonld_blocks, url=None, resolve_graph=False, identity_v2=False):
+def select_main_product(jsonld_blocks, url=None, resolve_graph=False):
     """Select the Product/ProductGroup that belongs to the watched URL."""
-    if identity_v2:
-        return select_main_product_v2(jsonld_blocks, url=url)
     if resolve_graph:
         jsonld_blocks, graph_conflict = _resolve_jsonld_graph(
             jsonld_blocks or [], base_url=url)
@@ -1212,22 +1258,21 @@ def _shadow_signature(product):
 
 def select_main_product_for_processing(jsonld_blocks, url=None):
     """Return the authoritative selection and optionally shadow-log v2."""
-    if IDENTITY_V2 and not IDENTITY_SHADOW:
-        return select_main_product_v2(jsonld_blocks, url=url)
-
-    selected = select_main_product(jsonld_blocks, url=url)
-    if IDENTITY_SHADOW:
-        try:
-            shadow = select_main_product_v2(jsonld_blocks, url=url)
-            shadow_signature = _shadow_signature(shadow)
-        except Exception as exc:
-            shadow_signature = f'error:{type(exc).__name__}'
-        selected_signature = _shadow_signature(selected)
-        if selected_signature != shadow_signature:
-            logger.warning(
-                f"Identity shadow difference url={url} "
-                f"old={selected_signature!r} v2={shadow_signature!r}")
-    return selected
+    if IDENTITY_SHADOW or IDENTITY_LEGACY:
+        selected = select_main_product(jsonld_blocks, url=url)
+        if IDENTITY_SHADOW:
+            try:
+                shadow = select_main_product_v2(jsonld_blocks, url=url)
+                shadow_signature = _shadow_signature(shadow)
+            except Exception as exc:
+                shadow_signature = f'error:{type(exc).__name__}'
+            selected_signature = _shadow_signature(selected)
+            if selected_signature != shadow_signature:
+                logger.warning(
+                    f"Identity shadow difference url={url} "
+                    f"old={selected_signature!r} v2={shadow_signature!r}")
+        return selected
+    return select_main_product_v2(jsonld_blocks, url=url)
 
 
 def microdata_item_types(item):
