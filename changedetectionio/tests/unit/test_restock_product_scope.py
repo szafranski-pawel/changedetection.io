@@ -53,6 +53,42 @@ class TestRestockProductScope(unittest.TestCase):
         self.assertEqual(pure(html, url), {})
         self.assertEqual(extruct(html, url).get('availability'), 'outofstock')
 
+    def test_main_microdata_offer_url_with_variant_query_is_out_of_stock(self):
+        # Intimissimi-style page: the main microdata repeats the parent product
+        # URL without the watched dwvar_ query, while carousel tiles say InStock.
+        html = """<html><body>
+        <script type="application/ld+json">
+        {"@context": "https://schema.org", "@type": "Product",
+         "name": "Bluzka z Modalu Pretty Flowers", "sku": "CL1294P",
+         "offers": {"@type": "Offer", "price": "null", "priceCurrency": ""}}
+        </script>
+        <div itemscope itemtype="http://schema.org/Product">
+          <span itemprop="name">Bluzka z Modalu Pretty Flowers</span>
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="null" />
+            <meta itemprop="priceCurrency" content="null" />
+          </div>
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="availability" content="OutOfStock" />
+            <meta itemprop="url" content="https://shop.example/product/main-CL1294P.html" />
+          </div>
+        </div>
+        <div itemscope itemtype="http://schema.org/Product"
+             itemid="OTHER123_color_9887">
+          <span itemprop="name">Carousel Top</span>
+          <div itemprop="offers" itemscope itemtype="http://schema.org/Offer">
+            <meta itemprop="price" content="99.9" />
+            <link itemprop="availability" href="http://schema.org/InStock" />
+          </div>
+        </div>
+        </body></html>"""
+
+        url = 'https://shop.example/product/main-CL1294P.html?dwvar_CL1294P_Z_COL_INTD=9887'
+        value = extract(html, url)
+        self.assertIsNone(value.get('price'))
+        self.assertEqual(value.get('availability'), 'outofstock')
+        self.assertEqual(extruct(html, url).get('availability'), 'outofstock')
+
     def test_main_product_price_beats_carousel(self):
         html = """<html><body>
         <script type="application/ld+json">
