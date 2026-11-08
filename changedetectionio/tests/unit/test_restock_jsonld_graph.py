@@ -5,6 +5,7 @@ from changedetectionio.processors.restock_diff.pure_python_extractor import (
     _collect_product_candidates,
     _resolve_jsonld_graph,
     select_main_product,
+    select_main_product_v2,
 )
 
 
@@ -85,6 +86,24 @@ def test_graph_duplicate_id_is_not_merged():
 
     assert conflict is True
     assert resolved[0]['hasVariant'][0] == {'@id': '#v'}
+
+
+def test_unreferenced_duplicate_id_is_not_a_graph_conflict():
+    blocks = [
+        {'@type': 'Product', '@id': '#product', 'name': 'Main', 'sku': '8012',
+         'url': 'https://shop.example/products/main',
+         'offers': {'price': '219', 'priceCurrency': 'PLN'}},
+        {'@type': 'Product', '@id': '#product', 'name': 'Main',
+         'aggregateRating': {'@type': 'AggregateRating', 'ratingValue': 4.9}},
+    ]
+
+    _resolved, conflict = _resolve_jsonld_graph(
+        blocks, base_url='https://shop.example/products/main')
+    selected = select_main_product_v2(
+        blocks, url='https://shop.example/products/main')
+
+    assert conflict is False
+    assert selected['sku'] == '8012'
 
 
 def test_graph_cycle_does_not_recurse_forever():

@@ -610,7 +610,8 @@ def _resolve_jsonld_graph(blocks, base_url=None):
     """Resolve reference-only @id objects without mutating the input.
 
     Returns (resolved_blocks, conflict). A duplicate @id is left unresolved and
-    marks the graph as conflicting rather than silently merging the nodes.
+    marks the graph as conflicting only when a reference points at it; unreferenced
+    duplicate nodes stay separate and are left to normal product selection.
     """
     if not blocks:
         return blocks, False
@@ -638,7 +639,6 @@ def _resolve_jsonld_graph(blocks, base_url=None):
     if len(nodes) > _GRAPH_NODE_CAP:
         return blocks, True
 
-    duplicate = any(len(entries) > 1 for entries in index.values())
     referenced_duplicate = False
 
     def resolve(value, seen):
@@ -664,7 +664,7 @@ def _resolve_jsonld_graph(blocks, base_url=None):
                 result[key] = resolve(child, seen)
         return result
 
-    return [resolve(block, set()) for block in blocks], duplicate or referenced_duplicate
+    return [resolve(block, set()) for block in blocks], referenced_duplicate
 
 
 def _collect_product_candidates(jsonld_blocks):
