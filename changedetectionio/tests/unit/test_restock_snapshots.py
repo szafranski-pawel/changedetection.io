@@ -28,6 +28,60 @@ SNAPSHOT_PATH = Path(__file__).with_name('restock_snapshots.json')
 POSITIVE_STOCK = (
     'instock', 'instoreonly', 'limitedavailability', 'onlineonly', 'presale')
 
+# Pinned parser versions used to generate the fixtures. Full live pages stay
+# out of the repo; these are reduced synthetic fragments.
+FIXTURE_MANIFEST = {
+    'extruct': '0.18.0',
+    'lxml': '6.x',
+    'python': '3.11+',
+    'fixture_policy': 'reduced synthetic fragments only; full pages stay private',
+}
+
+TARGETS = {
+    'anonymous_single_top_level': {
+        'price': 10.0, 'currency': 'PLN', 'availability': 'instock',
+        'in_stock': True},
+    'bare_offers_same_price_diff_stock': {
+        'price': 10.0, 'currency': None, 'availability': None,
+        'in_stock': None},
+    'conflicting_offer_stock': {
+        'price': 10.0, 'currency': 'PLN', 'availability': None,
+        'in_stock': None},
+    'duplicate_identity_prices': {
+        'price': 10.0, 'currency': None, 'availability': None,
+        'in_stock': None},
+    'explicit_null_main': {
+        'price': None, 'currency': None, 'availability': 'outofstock',
+        'in_stock': False},
+    'microdata_scope_name_mismatch': {
+        'price': 10.0, 'currency': 'PLN', 'availability': None,
+        'in_stock': None},
+    'microdata_sibling_size': {
+        'price': None, 'currency': None, 'availability': None,
+        'in_stock': None},
+    'nested_price_unit': {
+        'price': 10.0, 'currency': None, 'availability': 'instock',
+        'in_stock': True},
+    'og_sale_currency': {
+        'price': 80.0, 'currency': 'EUR', 'availability': None,
+        'in_stock': None},
+    'product_group_no_variant': {
+        'price': 219.0, 'currency': None, 'availability': None,
+        'in_stock': None},
+    'same_price_recommendations_vs_main_microdata': {
+        'price': 19.99, 'currency': None, 'availability': 'outofstock',
+        'in_stock': False},
+    'single_recommendation_with_url': {
+        'price': None, 'currency': None, 'availability': None,
+        'in_stock': None},
+    'variant_group_offer_url': {
+        'price': 84.99, 'currency': None, 'availability': None,
+        'in_stock': None},
+    'variant_value_different_path': {
+        'price': None, 'currency': None, 'availability': None,
+        'in_stock': None},
+}
+
 
 def stock_state(availability):
     if not availability:
@@ -291,9 +345,23 @@ LEGACY_CASES = [
 
 def build_snapshot():
     return {
-        'cases': {case['name']: outcome(case['html'], case['url']) for case in CASES},
+        'manifest': FIXTURE_MANIFEST,
+        'cases': {
+            case['name']: {
+                'expected_current': outcome(case['html'], case['url']),
+                'expected_target': TARGETS[case['name']],
+            }
+            for case in CASES
+        },
         'legacy': {case['name']: legacy_outcome(case['html']) for case in LEGACY_CASES},
     }
+
+
+def test_fixture_manifest_versions():
+    from importlib.metadata import version
+
+    assert version('extruct') == FIXTURE_MANIFEST['extruct']
+    assert version('lxml').split('.')[0] == FIXTURE_MANIFEST['lxml'].split('.')[0]
 
 
 def test_restock_snapshots():

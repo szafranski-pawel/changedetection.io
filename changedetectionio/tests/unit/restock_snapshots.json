@@ -1,520 +1,632 @@
 {
   "cases": {
     "anonymous_single_top_level": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": "instock",
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": true,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": "instock",
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": true,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": "instock",
+          "currency": "PLN",
+          "error": null,
+          "in_stock": true,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": "instock",
         "currency": "PLN",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "main",
-          "path": "",
-          "query": [],
-          "strong": []
-        },
         "in_stock": true,
         "price": 10.0
-      },
-      "pure": {
-        "availability": "instock",
-        "currency": "PLN",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "main",
-          "path": "",
-          "query": [],
-          "strong": []
-        },
-        "in_stock": true,
-        "price": 10.0
-      },
-      "safe": {
-        "availability": "instock",
-        "currency": "PLN",
-        "error": null,
-        "in_stock": true,
-        "price": 10.0,
-        "reason": "price"
       }
     },
     "bare_offers_same_price_diff_stock": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
         "in_stock": null,
         "price": 10.0
-      },
-      "pure": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
-        "in_stock": null,
-        "price": 10.0
-      },
-      "safe": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "in_stock": null,
-        "price": 10.0,
-        "reason": "price"
       }
     },
     "conflicting_offer_stock": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": "PLN",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "main",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
         "in_stock": null,
         "price": 10.0
-      },
-      "pure": {
-        "availability": null,
-        "currency": "PLN",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "main",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
-        "in_stock": null,
-        "price": 10.0
-      },
-      "safe": {
-        "availability": null,
-        "currency": "PLN",
-        "error": null,
-        "in_stock": null,
-        "price": 10.0,
-        "reason": "price"
       }
     },
     "duplicate_identity_prices": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same",
+            "path": "/products/same",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same",
+            "path": "/products/same",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "same",
-          "path": "/products/same",
-          "query": [],
-          "strong": []
-        },
         "in_stock": null,
         "price": 10.0
-      },
-      "pure": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "same",
-          "path": "/products/same",
-          "query": [],
-          "strong": []
-        },
-        "in_stock": null,
-        "price": 10.0
-      },
-      "safe": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "in_stock": null,
-        "price": 10.0,
-        "reason": "price"
       }
     },
     "explicit_null_main": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same name",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": false,
+          "price": null
+        },
+        "pure": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same name",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": false,
+          "price": null
+        },
+        "safe": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "in_stock": false,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
         "availability": "outofstock",
         "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "same name",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
         "in_stock": false,
         "price": null
-      },
-      "pure": {
-        "availability": "outofstock",
-        "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "same name",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
-        "in_stock": false,
-        "price": null
-      },
-      "safe": {
-        "availability": "outofstock",
-        "currency": null,
-        "error": null,
-        "in_stock": false,
-        "price": null,
-        "reason": "no_data"
       }
     },
     "microdata_scope_name_mismatch": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "ring",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "ring",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": "PLN",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "ring",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
         "in_stock": null,
         "price": 10.0
-      },
-      "pure": {
-        "availability": null,
-        "currency": "PLN",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "ring",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
-        "in_stock": null,
-        "price": 10.0
-      },
-      "safe": {
-        "availability": null,
-        "currency": "PLN",
-        "error": null,
-        "in_stock": null,
-        "price": 10.0,
-        "reason": "price"
       }
     },
     "microdata_sibling_size": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
         "in_stock": null,
         "price": null
-      },
-      "pure": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
-        "in_stock": null,
-        "price": null
-      },
-      "safe": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "in_stock": null,
-        "price": null,
-        "reason": "no_data"
       }
     },
     "nested_price_unit": {
-      "divergence": {
-        "price": [
-          10.0,
-          null
-        ]
+      "expected_current": {
+        "divergence": {
+          "price": [
+            10.0,
+            null
+          ]
+        },
+        "extruct": {
+          "availability": "instock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": true,
+          "price": null
+        },
+        "pure": {
+          "availability": "instock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": true,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": "instock",
+          "currency": null,
+          "error": null,
+          "in_stock": true,
+          "price": 10.0,
+          "reason": "price"
+        }
       },
-      "extruct": {
+      "expected_target": {
         "availability": "instock",
         "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
-        "in_stock": true,
-        "price": null
-      },
-      "pure": {
-        "availability": "instock",
-        "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
         "in_stock": true,
         "price": 10.0
-      },
-      "safe": {
-        "availability": "instock",
-        "currency": null,
-        "error": null,
-        "in_stock": true,
-        "price": 10.0,
-        "reason": "price"
       }
     },
     "og_sale_currency": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": "EUR",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 80.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": "EUR",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 80.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": "EUR",
+          "error": null,
+          "in_stock": null,
+          "price": 80.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": "EUR",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "main",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
         "in_stock": null,
         "price": 80.0
-      },
-      "pure": {
-        "availability": null,
-        "currency": "EUR",
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "main",
-          "path": "",
-          "query": [],
-          "strong": [
-            "MAIN123"
-          ]
-        },
-        "in_stock": null,
-        "price": 80.0
-      },
-      "safe": {
-        "availability": null,
-        "currency": "EUR",
-        "error": null,
-        "in_stock": null,
-        "price": 80.0,
-        "reason": "price"
       }
     },
     "product_group_no_variant": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "huel",
+            "path": "/products/huel",
+            "query": [],
+            "strong": [
+              "HUE-190",
+              "HUE-219"
+            ]
+          },
+          "in_stock": null,
+          "price": 219.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "huel",
+            "path": "/products/huel",
+            "query": [],
+            "strong": [
+              "HUE-190",
+              "HUE-219"
+            ]
+          },
+          "in_stock": null,
+          "price": 219.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 219.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "huel",
-          "path": "/products/huel",
-          "query": [],
-          "strong": [
-            "HUE-190",
-            "HUE-219"
-          ]
-        },
         "in_stock": null,
         "price": 219.0
-      },
-      "pure": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "huel",
-          "path": "/products/huel",
-          "query": [],
-          "strong": [
-            "HUE-190",
-            "HUE-219"
-          ]
-        },
-        "in_stock": null,
-        "price": 219.0
-      },
-      "safe": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "in_stock": null,
-        "price": 219.0,
-        "reason": "price"
       }
     },
     "same_price_recommendations_vs_main_microdata": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": false,
+          "price": 19.99
+        },
+        "pure": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": false,
+          "price": 19.99
+        },
+        "safe": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "in_stock": false,
+          "price": 19.99,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": "outofstock",
         "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
         "in_stock": false,
         "price": 19.99
-      },
-      "pure": {
-        "availability": "outofstock",
-        "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
-        "in_stock": false,
-        "price": 19.99
-      },
-      "safe": {
-        "availability": "outofstock",
-        "currency": null,
-        "error": null,
-        "in_stock": false,
-        "price": 19.99,
-        "reason": "price"
       }
     },
     "single_recommendation_with_url": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
         "in_stock": null,
         "price": null
-      },
-      "pure": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
-        "in_stock": null,
-        "price": null
-      },
-      "safe": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "in_stock": null,
-        "price": null,
-        "reason": "no_data"
       }
     },
     "variant_group_offer_url": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "",
+            "path": "",
+            "query": [],
+            "strong": [
+              "G-TWO"
+            ]
+          },
+          "in_stock": null,
+          "price": 84.99
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "",
+            "path": "",
+            "query": [],
+            "strong": [
+              "G-TWO"
+            ]
+          },
+          "in_stock": null,
+          "price": 84.99
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 84.99,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "",
-          "path": "",
-          "query": [],
-          "strong": [
-            "G-TWO"
-          ]
-        },
         "in_stock": null,
         "price": 84.99
-      },
-      "pure": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "had_main": true,
-        "identity": {
-          "name": "",
-          "path": "",
-          "query": [],
-          "strong": [
-            "G-TWO"
-          ]
-        },
-        "in_stock": null,
-        "price": 84.99
-      },
-      "safe": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "in_stock": null,
-        "price": 84.99,
-        "reason": "price"
       }
     },
     "variant_value_different_path": {
-      "divergence": {},
-      "extruct": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
         "availability": null,
         "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
         "in_stock": null,
         "price": null
-      },
-      "pure": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "had_main": false,
-        "identity": null,
-        "in_stock": null,
-        "price": null
-      },
-      "safe": {
-        "availability": null,
-        "currency": null,
-        "error": null,
-        "in_stock": null,
-        "price": null,
-        "reason": "no_data"
       }
     }
   },
@@ -533,5 +645,11 @@
         "price": 1299.0
       }
     }
+  },
+  "manifest": {
+    "extruct": "0.18.0",
+    "fixture_policy": "reduced synthetic fragments only; full pages stay private",
+    "lxml": "6.x",
+    "python": "3.11+"
   }
 }
