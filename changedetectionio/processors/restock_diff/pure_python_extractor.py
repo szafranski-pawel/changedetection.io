@@ -1432,8 +1432,15 @@ def _strong_keys_match(strong_keys, url_keys, url):
                     | set(_key_tokens(_last_segment(key))))
         return set(_key_tokens(key))
 
+    # Microdata often repeats the parent product URL without the watched
+    # variant query. Path equality is enough to scope that product; exact
+    # variant identity is still required when selecting a specific offer.
+    def url_key_matches(key):
+        return (_scope_key_matches(key, url)
+                or ('/' in key and _same_path_host(url, key)))
+
     strong_match = any(_scope_key_matches(key, url) for key in strong_keys)
-    url_match = any(_scope_key_matches(key, url) for key in url_keys if key)
+    url_match = any(url_key_matches(key) for key in url_keys if key)
     if url_keys:
         if url_match:
             if strong_match:
