@@ -1518,13 +1518,46 @@ def has_explicit_missing_price(product):
     return False
 
 
+def _extruct_price_is_ambiguous(value):
+    """True when extruct joined multiple text nodes into one price string.
+
+    Extruct flattens adjacent text nodes with a space, so 10<del>20</del>
+    becomes "10 20" and 10<span>/100ml</span> becomes "10 /100ml". Pure Python
+    owns scoped microdata price; extruct must not turn these into 1020/10100.
+    """
+    if not isinstance(value, str):
+        return False
+    return (len(re.findall(r'\d[\d.,]*', value)) > 1
+            or bool(re.search(r'\d\s*/\s*\d', value)))
+
+
+def _strip_ambiguous_microdata_price(properties):
+    if not isinstance(properties, dict):
+        return properties
+    price = properties.get('price')
+    if _extruct_price_is_ambiguous(price):
+        return {key: value for key, value in properties.items()
+                if not (isinstance(key, str) and key.casefold() == 'price')}
+    if isinstance(price, list):
+        trusted = [entry for entry in price
+                   if not _extruct_price_is_ambiguous(entry)]
+        if len(trusted) != len(price):
+            result = dict(properties)
+            if trusted:
+                result['price'] = trusted
+            else:
+                result.pop('price', None)
+            return result
+    return properties
+
+
 def microdata_product_data(item):
     """Extract price/currency/availability from one extruct microdata Product."""
     if not isinstance(item, dict):
         return {}
-    properties = item.get('properties') or {}
+    properties = _strip_ambiguous_microdata_price(item.get('properties') or {})
 
-    offers = [_unwrap_properties(offer)
+    offers = [_strip_ambiguous_microdata_price(_unwrap_properties(offer))
               for offer in _as_list(properties.get('offers'))
               if isinstance(offer, dict)]
 

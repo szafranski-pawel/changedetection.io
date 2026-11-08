@@ -269,7 +269,7 @@
       "divergence": {
         "price": [
           10.0,
-          10100.0
+          null
         ]
       },
       "extruct": {
@@ -279,7 +279,7 @@
         "had_main": false,
         "identity": null,
         "in_stock": true,
-        "price": 10100.0
+        "price": null
       },
       "pure": {
         "availability": "instock",

@@ -1252,6 +1252,7 @@ class TestRestockProductScope(unittest.TestCase):
         url = 'https://shop.example/product/main-1299.html'
         self.assertEqual(pure(html, url).get('price'), 10.0)
         self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertIsNone(extruct(html, url).get('price'))
 
     def test_microdata_strong_key_mismatch_vetoes_name_match(self):
         html = """<html><body>
@@ -1551,6 +1552,7 @@ class TestRestockProductScope(unittest.TestCase):
         url = 'https://shop.example/product/main-1299.html'
         self.assertEqual(pure(html, url).get('price'), 10.0)
         self.assertEqual(extract(html, url).get('price'), 10.0)
+        self.assertIsNone(extruct(html, url).get('price'))
 
     def test_variant_url_www_and_case_insensitive(self):
         html = """<html><body>

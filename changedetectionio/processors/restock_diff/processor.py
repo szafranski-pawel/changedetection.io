@@ -434,6 +434,11 @@ def extract_itemprop_availability_safe(html_content, url=None) -> Restock:
     1. Try pure Python extraction (JSON-LD, OpenGraph, microdata) - covers 80%+ of cases
     2. Fall back to extruct with subprocess isolation on Linux for complex cases
 
+    Ownership: pure Python is authoritative for product identity and scoped
+    microdata price. Extruct is a fallback for JSON-LD/OpenGraph and microdata
+    currency/availability; its microdata price is rejected when extruct has
+    concatenated adjacent text nodes (for example 10<del>20</del>).
+
     Args:
         html_content: HTML string to parse
         url: Watch URL used to select the product in the page (None keeps legacy behaviour)
