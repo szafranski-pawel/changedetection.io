@@ -3,6 +3,7 @@ from babel.numbers import parse_decimal
 from changedetectionio.model.Watch import model as BaseWatch
 from decimal import Decimal, InvalidOperation
 from typing import Union
+import math
 import re
 
 # Processor capabilities
@@ -12,6 +13,7 @@ supports_text_filters_and_triggers = True
 supports_text_filters_and_triggers_elements = True
 supports_request_type = True
 _price_re = re.compile(r"Price:\s*(\d+(?:\.\d+)?)", re.IGNORECASE)
+MISSING_STRINGS = {'', 'null', 'none', 'n/a', 'na', 'not_available', 'notavailable', 'undefined'}
 
 
 class Restock(dict):
@@ -43,7 +45,11 @@ class Restock(dict):
         if standardized_value:
             # Convert to float
             # @todo locale needs to be the locale of the webpage
-            return float(parse_decimal(standardized_value, locale='en'))
+            try:
+                value = float(parse_decimal(standardized_value, locale='en'))
+            except (ValueError, ArithmeticError):
+                return None
+            return value if math.isfinite(value) else None
 
         return None
 
@@ -62,15 +68,35 @@ class Restock(dict):
         # Update with any provided positional arguments (dictionaries)
         if args:
             if len(args) == 1 and isinstance(args[0], dict):
-                self.update(args[0])
+                # dict.update() bypasses __setitem__, so a string price (eg "null" from an
+                # unavailable product, or "1.299,00") would stay a string and crash float() later.
+                for key, value in args[0].items():
+                    self[key] = value
             else:
                 raise ValueError("Only one positional argument of type 'dict' is allowed")
 
     def __setitem__(self, key, value):
         # Custom logic to handle setting price and last_price
         if key == 'price' or key == 'last_price':
-            if isinstance(value, str):
+            if isinstance(value, (bool, list, dict, tuple, set, frozenset)):
+                value = None
+            elif isinstance(value, str):
                 value = self.parse_currency(raw_value=value)
+            elif isinstance(value, (int, float)):
+                try:
+                    value = float(value)
+                except (OverflowError, ValueError):
+                    value = None
+                else:
+                    if not math.isfinite(value):
+                        value = None
+        elif key in ('currency', 'availability'):
+            if isinstance(value, (bool, list, dict, tuple, set, frozenset)):
+                value = None
+            elif isinstance(value, str):
+                # Some sites (and our old extractor) emit the literal string "null".
+                if value.strip().lower() in MISSING_STRINGS:
+                    value = None
 
         super().__setitem__(key, value)
 

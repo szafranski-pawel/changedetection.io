@@ -1,0 +1,655 @@
+{
+  "cases": {
+    "anonymous_single_top_level": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": "instock",
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": true,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": "instock",
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": true,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": "instock",
+          "currency": "PLN",
+          "error": null,
+          "in_stock": true,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": "instock",
+        "currency": "PLN",
+        "in_stock": true,
+        "price": 10.0
+      }
+    },
+    "bare_offers_same_price_diff_stock": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": 10.0
+      }
+    },
+    "conflicting_offer_stock": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": "PLN",
+        "in_stock": null,
+        "price": 10.0
+      }
+    },
+    "duplicate_identity_prices": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same",
+            "path": "/products/same",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same",
+            "path": "/products/same",
+            "query": [],
+            "strong": []
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": 10.0
+      }
+    },
+    "explicit_null_main": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same name",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": false,
+          "price": null
+        },
+        "pure": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "same name",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": false,
+          "price": null
+        },
+        "safe": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "in_stock": false,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
+        "availability": "outofstock",
+        "currency": null,
+        "in_stock": false,
+        "price": null
+      }
+    },
+    "microdata_scope_name_mismatch": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "ring",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "ring",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": "PLN",
+          "error": null,
+          "in_stock": null,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": "PLN",
+        "in_stock": null,
+        "price": 10.0
+      }
+    },
+    "microdata_sibling_size": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": null
+      }
+    },
+    "nested_price_unit": {
+      "expected_current": {
+        "divergence": {
+          "price": [
+            10.0,
+            null
+          ]
+        },
+        "extruct": {
+          "availability": "instock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": true,
+          "price": null
+        },
+        "pure": {
+          "availability": "instock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": true,
+          "price": 10.0
+        },
+        "safe": {
+          "availability": "instock",
+          "currency": null,
+          "error": null,
+          "in_stock": true,
+          "price": 10.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": "instock",
+        "currency": null,
+        "in_stock": true,
+        "price": 10.0
+      }
+    },
+    "og_sale_currency": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": "EUR",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 80.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": "EUR",
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "main",
+            "path": "",
+            "query": [],
+            "strong": [
+              "MAIN123"
+            ]
+          },
+          "in_stock": null,
+          "price": 80.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": "EUR",
+          "error": null,
+          "in_stock": null,
+          "price": 80.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": "EUR",
+        "in_stock": null,
+        "price": 80.0
+      }
+    },
+    "product_group_no_variant": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "huel",
+            "path": "/products/huel",
+            "query": [],
+            "strong": [
+              "HUE-190",
+              "HUE-219"
+            ]
+          },
+          "in_stock": null,
+          "price": 219.0
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "huel",
+            "path": "/products/huel",
+            "query": [],
+            "strong": [
+              "HUE-190",
+              "HUE-219"
+            ]
+          },
+          "in_stock": null,
+          "price": 219.0
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 219.0,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": 219.0
+      }
+    },
+    "same_price_recommendations_vs_main_microdata": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": false,
+          "price": 19.99
+        },
+        "pure": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": false,
+          "price": 19.99
+        },
+        "safe": {
+          "availability": "outofstock",
+          "currency": null,
+          "error": null,
+          "in_stock": false,
+          "price": 19.99,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": "outofstock",
+        "currency": null,
+        "in_stock": false,
+        "price": 19.99
+      }
+    },
+    "single_recommendation_with_url": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": null
+      }
+    },
+    "variant_group_offer_url": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "",
+            "path": "",
+            "query": [],
+            "strong": [
+              "G-TWO"
+            ]
+          },
+          "in_stock": null,
+          "price": 84.99
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": true,
+          "identity": {
+            "name": "",
+            "path": "",
+            "query": [],
+            "strong": [
+              "G-TWO"
+            ]
+          },
+          "in_stock": null,
+          "price": 84.99
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": 84.99,
+          "reason": "price"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": 84.99
+      }
+    },
+    "variant_value_different_path": {
+      "expected_current": {
+        "divergence": {},
+        "extruct": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "pure": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "had_main": false,
+          "identity": null,
+          "in_stock": null,
+          "price": null
+        },
+        "safe": {
+          "availability": null,
+          "currency": null,
+          "error": null,
+          "in_stock": null,
+          "price": null,
+          "reason": "no_data"
+        }
+      },
+      "expected_target": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": null
+      }
+    }
+  },
+  "legacy": {
+    "legacy_split_price": {
+      "pure": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": 1299.0
+      },
+      "safe": {
+        "availability": null,
+        "currency": null,
+        "in_stock": null,
+        "price": 1299.0
+      }
+    }
+  },
+  "manifest": {
+    "extruct": "0.18.0",
+    "fixture_policy": "reduced synthetic fragments only; full pages stay private",
+    "lxml": "6.x",
+    "python": "3.11+"
+  }
+}

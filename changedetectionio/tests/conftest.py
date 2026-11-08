@@ -18,6 +18,10 @@ os.environ['DEFAULT_SETTINGS_REQUESTS_TIMEOUT'] = '5'
 # Allow it globally so all existing tests keep working; test_ssrf_protection
 # uses monkeypatch to temporarily override this for its own assertions.
 os.environ['ALLOW_IANA_RESTRICTED_ADDRESSES'] = 'true'
+# pytest-flask otherwise defaults SERVER_NAME to "localhost.localdomain", which is
+# not in /etc/hosts and depends on an external DNS server resolving it. Use plain
+# localhost so integration tests do not depend on DNS.
+os.environ.setdefault('FLASK_SERVER_NAME', 'localhost')
 
 from changedetectionio.flask_app import init_app_secret, changedetection_app
 from changedetectionio.tests.util import live_server_setup, new_live_server_setup
